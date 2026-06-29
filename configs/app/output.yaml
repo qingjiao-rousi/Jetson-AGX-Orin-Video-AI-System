@@ -1,0 +1,9 @@
+output:
+  enable_jsonl: true
+  jsonl_path: outputs/results.jsonl
+  enable_mqtt: false
+  enable_kafka: false
+  mqtt_host: 127.0.0.1
+  mqtt_port: 1883
+  mqtt_topic: deepstream/results
+

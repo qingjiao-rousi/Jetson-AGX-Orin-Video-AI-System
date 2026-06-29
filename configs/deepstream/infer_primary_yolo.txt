@@ -1,0 +1,17 @@
+[property]
+gpu-id=0
+net-scale-factor=0.00392156862745098
+model-engine-file=models/yolov8n.engine
+labelfile-path=models/labels.txt
+batch-size=6
+network-mode=2
+num-detected-classes=80
+interval=0
+gie-unique-id=1
+process-mode=1
+network-type=0
+infer-dims=3;640;640
+custom-lib-path=custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+parse-bbox-func-name=NvDsInferParseYolo
+cluster-mode=2
+
