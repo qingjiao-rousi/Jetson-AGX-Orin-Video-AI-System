@@ -59,7 +59,7 @@ tests/unit/                 — 纯 Python 单元测试（7 个文件，不依�
 
 ## 常用命令
 
-### Python 环境（开发机）
+### Python 环境
 
 ```bash
 # 激活虚拟环境
@@ -69,7 +69,7 @@ tests/unit/                 — 纯 Python 单元测试（7 个文件，不依�
 pip install pyyaml
 ```
 
-### 测试（开发机可跑）
+### 测试
 
 ```bash
 # 跑全部单元测试
@@ -82,7 +82,7 @@ python -m pytest tests/unit/test_pipeline_builder.py -v
 python -m pytest tests/unit/test_pipeline_builder.py::test_build_minimal_pipeline -v
 ```
 
-### Web 预览（开发机可跑，无需 DeepStream）
+### Web 预览
 
 ```bash
 python scripts/preview_web.py
@@ -165,14 +165,6 @@ tegrastats --interval 1000            # GPU 监控是否可用
 - 输出模块统一消费 domain 对象，**不耦合 DeepStream 原始元数据**（`NvDsBatchMeta` 等）
 
 ## 关键设计决策
-
-### GStreamer 离线兼容
-
-`GStreamerRuntimeFactory`（`builder.py:33`）在 import `gi`/`pyds` 失败时不抛异常，而是设置 `available=False`。这使得：
-
-- 开发机上可以 import 所有模块、跑单元测试
-- Pipeline 构建在离线模式下返回 dry-run 结果
-- 日志会打印 `"GStreamer runtime is not available"` 警告
 
 ### Probe → 领域对象转换链路
 
