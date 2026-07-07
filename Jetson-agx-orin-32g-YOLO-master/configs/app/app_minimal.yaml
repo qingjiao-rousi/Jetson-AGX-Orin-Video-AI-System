@@ -1,0 +1,56 @@
+app:
+  app_name: deepstream-yolov8-minimal
+  source_count: 1
+  enable_web: true
+
+web:
+  enabled: true
+  host: 127.0.0.1
+  port: 8080
+  enable_status_api: true
+  enable_debug_api: true
+  enable_logs_api: true
+  refresh_interval_ms: 1000
+  log_buffer_size: 200
+
+sources:
+  - name: local_video_01
+    kind: file
+    uri: /home/nvidia/Desktop/YOLO/video/11798561-hd_1920_1080_50fps.mp4
+    enabled: true
+
+logging:
+  level: INFO
+  file_path: outputs/logs/app.log
+  console: true
+
+output:
+  jsonl_path: outputs/results.jsonl
+  enable_jsonl: true
+  enable_mqtt: false
+  enable_kafka: false
+  mqtt_host: 127.0.0.1
+  mqtt_port: 1883
+  mqtt_topic: deepstream/results
+
+optimization:
+  max_queue_size: 8
+  fps_min: 5.0
+  fps_max: 30.0
+  enable_fps_control: false
+  enable_backpressure: true
+
+deepstream:
+  batch_size: 1
+  batched_push_timeout_us: 40000
+  inference_width: 1280
+  inference_height: 720
+  enable_tracker: true
+  enable_osd: true
+  output_sink: file
+  output_video_path: outputs/person_detect.mp4
+  model_engine_path: models/yolov8s.engine
+  custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+  tracker_config_path: configs/deepstream/tracker_iou.yml
+  infer_config_path: configs/deepstream/infer_primary_yolo_minimal.txt
+  streammux_config_path: configs/deepstream/streammux.yaml

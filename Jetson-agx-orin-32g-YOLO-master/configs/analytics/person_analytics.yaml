@@ -1,0 +1,11 @@
+min_track_frames: 2
+
+rois:
+  - id: full-frame
+    rect: [0, 0, 1280, 720]
+
+lines:
+  - id: middle-vertical
+    points: [640, 0, 640, 720]
+    min_side_distance: 1.0
+    count_once_per_track: true

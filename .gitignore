@@ -1,0 +1,85 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and local env files
+.env
+.env.*
+!.env.example
+venv/
+.venv/
+env/
+ENV/
+export_yolov8_ds/venv/
+
+# Native build outputs
+*.d
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+build/
+dist/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.user
+
+# TensorRT / DeepStream generated artifacts
+*.engine
+*.plan
+*.trt
+*.uff
+*.cache
+*.calib
+calib.table
+
+# Model weights and exported model binaries
+*.pt
+*.pth
+*.onnx
+*.onnx.data
+*.weights
+*.wts
+*.pb
+*.tflite
+
+# Runtime outputs, logs, and reports
+outputs/
+**/outputs/
+logs/
+*.log
+*.jsonl
+*.csv
+
+# Local media and datasets
+video/
+videos/
+datasets/
+data/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+
+# Keep placeholder files when directories need to exist
+!.gitkeep

@@ -1,0 +1,47 @@
+app:
+  app_name: deepstream-multistream
+  source_count: 6
+  enable_web: false
+
+web:
+  enabled: false
+  host: 127.0.0.1
+  port: 8080
+  enable_status_api: true
+  enable_debug_api: true
+  enable_logs_api: true
+  refresh_interval_ms: 1000
+  log_buffer_size: 200
+
+logging:
+  level: INFO
+  file_path: outputs/logs/app.log
+  console: true
+
+output:
+  jsonl_path: outputs/results.jsonl
+  enable_jsonl: true
+  enable_mqtt: false
+  enable_kafka: false
+  mqtt_host: 127.0.0.1
+  mqtt_port: 1883
+  mqtt_topic: deepstream/results
+
+optimization:
+  max_queue_size: 32
+  fps_min: 5.0
+  fps_max: 30.0
+  enable_fps_control: true
+  enable_backpressure: true
+
+deepstream:
+  batch_size: 6
+  batched_push_timeout_us: 40000
+  inference_width: 640
+  inference_height: 640
+  model_engine_path: models/yolov8n.engine
+  # 指向一个自定义的YOLO解析库,如非极大值抑制NMS
+  custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+  tracker_config_path: configs/deepstream/tracker_iou.yml
+  infer_config_path: configs/deepstream/infer_primary_yolo.txt
+  streammux_config_path: configs/deepstream/streammux.yaml
