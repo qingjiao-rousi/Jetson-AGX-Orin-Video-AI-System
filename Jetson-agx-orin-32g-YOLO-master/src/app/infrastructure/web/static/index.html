@@ -220,6 +220,20 @@
       gap: 10px;
     }
 
+    .artifact-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    .artifact-links .btn {
+      min-height: 32px;
+      padding: 0 12px;
+      font-size: 13px;
+    }
+
     .btn {
       display: inline-flex;
       align-items: center;
@@ -392,6 +406,45 @@
       gap: 20px;
       padding: 20px 28px 28px;
       min-height: 0;
+    }
+
+    .advanced-debug {
+      margin: 0 28px 28px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      order: 30;
+    }
+
+    .advanced-debug summary {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 20px;
+      cursor: pointer;
+      color: var(--text);
+      font-weight: 600;
+      list-style: none;
+    }
+
+    .advanced-debug summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .advanced-debug summary::after {
+      content: "展开";
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .advanced-debug[open] summary::after {
+      content: "收起";
+    }
+
+    .advanced-debug .workspace {
+      padding-top: 0;
     }
 
     .column {
@@ -1020,6 +1073,35 @@
 
     .batch-detail {
       display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+      grid-column: 1 / -1;
+    }
+
+    .batch-detail-section.wide {
+      grid-column: 1 / -1;
+    }
+
+    .batch-detail-section {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+    }
+
+    .batch-detail-section h3 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .batch-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 10px;
     }
 
@@ -1032,16 +1114,49 @@
       border-radius: 8px;
       background: #fafbfc;
       font-size: 13px;
+      min-width: 0;
     }
 
     .batch-detail-row span:first-child {
       color: var(--muted);
     }
 
+    .batch-detail-row strong {
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+
     .batch-links {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+    }
+
+    .acceptance-banner {
+      margin: 20px 20px 0;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fafbfc;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .acceptance-banner strong {
+      color: var(--text);
+      font-size: 16px;
+    }
+
+    .log-preview {
+      margin: 0;
+      max-height: 180px;
+      border: 1px solid var(--line-light);
+      border-radius: 8px;
+      border-top: 1px solid var(--line-light);
     }
 
     .empty-state {
@@ -1172,6 +1287,14 @@
         grid-template-columns: 1fr;
       }
 
+      .batch-detail {
+        grid-template-columns: 1fr;
+      }
+
+      .batch-detail-grid {
+        grid-template-columns: 1fr;
+      }
+
       .column {
         order: 0;
       }
@@ -1285,6 +1408,8 @@
         </div>
       </section>
 
+      <details class="advanced-debug">
+        <summary>高级实时调试区 <span>实时流、视频墙、Pipeline 日志和原始调试快照</span></summary>
       <section class="workspace">
         <div class="column">
           <section class="panel">
@@ -1299,7 +1424,7 @@
               <div class="large-video" id="selected-video"></div>
               <div class="details">
                 <div class="detail-grid">
-                  <div class="detail-cell"><label>实时 FPS</label><strong id="detail-fps">-</strong></div>
+                  <div class="detail-cell"><label>FPS</label><strong id="detail-fps">-</strong></div>
                   <div class="detail-cell"><label>延迟 (ms)</label><strong id="detail-latency">-</strong></div>
                   <div class="detail-cell"><label>检测对象</label><strong id="detail-detections">-</strong></div>
                   <div class="detail-cell"><label>丢帧数</label><strong id="detail-dropped">-</strong></div>
@@ -1350,18 +1475,38 @@
           </section>
         </aside>
       </section>
+      <section class="panel" style="margin: 0 28px 28px; border-radius: 12px;">
+        <div class="panel-head">
+          <div>
+            <h2>原始调试快照 (Debug Snapshot)</h2>
+            <span>Pipeline、Bus、Probe、Monitor、Writer、Optimization 的完整状态数据</span>
+          </div>
+          <span id="snapshot-time">-</span>
+        </div>
+        <pre id="snapshot">正在加载调试快照数据...</pre>
+      </section>
+      </details>
 
       <section class="panel" style="margin: 0 28px 28px; border-radius: 12px;">
         <div class="panel-head">
           <div>
             <h2>批量视频结果看板</h2>
             <span id="batch-note">读取 outputs/batch/batch_summary.json 与 batch_quality.json</span>
+            <div class="artifact-links" id="batch-artifacts"></div>
           </div>
           <div class="filters">
             <button class="btn active" type="button" data-batch-filter="all">全部</button>
             <button class="btn" type="button" data-batch-filter="review">复核</button>
             <button class="btn" type="button" data-batch-filter="failed">失败</button>
+            <button class="btn" type="button" data-batch-filter="with-person">有人</button>
+            <button class="btn" type="button" data-batch-filter="no-person">无人</button>
+            <button class="btn" type="button" data-batch-filter="fps-low">FPS异常</button>
+            <button class="btn" type="button" data-batch-filter="non-continuous">帧不连续</button>
           </div>
+        </div>
+        <div class="acceptance-banner">
+          <strong id="acceptance-title">等待验收结果</strong>
+          <span id="acceptance-detail">批量结果加载后显示本次验收结论</span>
         </div>
         <div class="batch-summary">
           <div class="metric"><label>视频总数</label><strong id="batch-total" class="metric-value">-</strong><span>批量输入</span></div>
@@ -1370,6 +1515,9 @@
           <div class="metric"><label>失败</label><strong id="batch-failed" class="metric-value">-</strong><span>failed</span></div>
           <div class="metric"><label>去重人数</label><strong id="batch-persons" class="metric-value">-</strong><span>total unique</span></div>
           <div class="metric"><label>越线 In/Out</label><strong id="batch-line" class="metric-value">-</strong><span>line crossing</span></div>
+          <div class="metric"><label>总耗时</label><strong id="batch-duration" class="metric-value">-</strong><span>wall time</span></div>
+          <div class="metric"><label>并发数</label><strong id="batch-jobs" class="metric-value">-</strong><span>BATCH_JOBS</span></div>
+          <div class="metric"><label>处理 FPS</label><strong id="batch-processing-fps" class="metric-value">-</strong><span>frames / wall time</span></div>
         </div>
         <div class="batch-layout">
           <div class="batch-table-wrap">
@@ -1383,34 +1531,24 @@
                   <th>人数</th>
                   <th>ROI</th>
                   <th>越线</th>
-                  <th>FPS</th>
+                  <th>时间轴 FPS</th>
+                  <th>处理 FPS</th>
                   <th>连续</th>
                   <th>错误/复核原因</th>
                 </tr>
               </thead>
               <tbody id="batch-table-body">
-                <tr><td colspan="10">等待批量结果加载...</td></tr>
+                <tr><td colspan="11">等待批量结果加载...</td></tr>
               </tbody>
             </table>
           </div>
           <aside class="batch-player">
             <video id="batch-video" controls preload="metadata"></video>
-            <div class="batch-detail" id="batch-detail">
-              <div class="empty-state">选择左侧一个视频查看 overlay 播放和统计详情</div>
-            </div>
           </aside>
-        </div>
-      </section>
-
-      <section class="panel" style="margin: 0 28px 28px; border-radius: 12px;">
-        <div class="panel-head">
-          <div>
-            <h2>原始调试快照 (Debug Snapshot)</h2>
-            <span>Pipeline、Bus、Probe、Monitor、Writer、Optimization 的完整状态数据</span>
+          <div class="batch-detail" id="batch-detail">
+            <div class="empty-state">选择上方一个视频查看运行耗时、输出文件、质量原因和日志摘要</div>
           </div>
-          <span id="snapshot-time">-</span>
         </div>
-        <pre id="snapshot">正在加载调试快照数据...</pre>
       </section>
     </main>
   </div>

@@ -33,6 +33,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable the dashboard server for batch processing.",
     )
+    parser.add_argument(
+        "--runtime-dir",
+        type=Path,
+        help="Directory for per-run generated DeepStream config files.",
+    )
     return parser.parse_args()
 
 
@@ -49,6 +54,7 @@ def main() -> int:
         confidence_threshold=args.confidence_threshold,
         person_only=not args.all_classes,
         enable_web=False if args.no_web else None,
+        runtime_dir=args.runtime_dir,
     )
     app = create_application(args.config, settings=settings)
 

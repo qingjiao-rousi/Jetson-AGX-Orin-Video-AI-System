@@ -20,6 +20,7 @@ def apply_runtime_overrides(
     confidence_threshold: float | None = None,
     person_only: bool = True,
     enable_web: bool | None = None,
+    runtime_dir: Path | None = None,
 ) -> AppSettings:
     deepstream = settings.deepstream
     output = settings.output
@@ -63,6 +64,7 @@ def apply_runtime_overrides(
             deepstream.infer_config_path,
             confidence_threshold=confidence_threshold,
             person_only=person_only,
+            runtime_dir=runtime_dir,
         )
         deepstream = replace(deepstream, infer_config_path=runtime_infer_config)
 
@@ -82,6 +84,7 @@ def _write_runtime_infer_config(
     *,
     confidence_threshold: float | None,
     person_only: bool,
+    runtime_dir: Path | None = None,
 ) -> Path:
     text = base_path.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -116,7 +119,7 @@ def _write_runtime_infer_config(
     if confidence_threshold is not None and not saw_threshold:
         updated.extend(["", "[class-attrs-all]", f"pre-cluster-threshold={confidence_threshold:.4f}"])
 
-    runtime_dir = Path("outputs/runtime")
+    runtime_dir = runtime_dir or Path("outputs/runtime")
     runtime_dir.mkdir(parents=True, exist_ok=True)
     runtime_path = runtime_dir / base_path.name
     runtime_path.write_text("\n".join(updated) + "\n", encoding="utf-8")

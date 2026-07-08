@@ -83,3 +83,10 @@ data/
 
 # Keep placeholder files when directories need to exist
 !.gitkeep
+
+# Versioned Jetson runtime artifacts
+!Jetson-agx-orin-32g-YOLO-master/custom_libs/nvdsinfer_custom_impl_Yolo/
+!Jetson-agx-orin-32g-YOLO-master/custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+!Jetson-agx-orin-32g-YOLO-master/models/
+!Jetson-agx-orin-32g-YOLO-master/models/yolov8s.engine
+!Jetson-agx-orin-32g-YOLO-master/models/yolov8s.onnx

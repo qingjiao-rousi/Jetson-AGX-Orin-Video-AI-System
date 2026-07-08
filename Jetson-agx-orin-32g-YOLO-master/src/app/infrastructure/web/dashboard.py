@@ -88,6 +88,7 @@ class DashboardApi:
             "batch_dir": str(self._batch_dir()),
             "summary": summary,
             "quality": quality,
+            "artifacts": self._batch_artifacts(),
             "videos": self._merge_batch_videos(summary, quality),
         }
         return self._json(payload)
@@ -151,11 +152,26 @@ class DashboardApi:
             merged["index"] = index
             quality_item = quality_by_input.get(video.get("input_video"), {})
             merged["quality"] = quality_item
-            for key in ("output_video", "output_overlay_video", "output_jsonl", "output_summary"):
+            for key in ("output_video", "output_overlay_video", "output_jsonl", "output_summary", "log_path"):
                 if merged.get(key):
                     merged[f"{key}_url"] = self._batch_url_for_path(merged[key])
+            if merged.get("log_path"):
+                merged["log_tail"] = self._read_text_tail(Path(str(merged["log_path"])), max_lines=80)
             videos.append(merged)
         return videos
+
+    def _batch_artifacts(self) -> dict[str, str]:
+        artifacts: dict[str, str] = {}
+        for key, name in {
+            "summary": "batch_summary.json",
+            "quality": "batch_quality.json",
+            "html_report": "batch_report.html",
+            "csv_report": "batch_summary.csv",
+        }.items():
+            path = self._batch_dir() / name
+            if path.is_file():
+                artifacts[key] = self._batch_url_for_path(str(path))
+        return artifacts
 
     def _batch_url_for_path(self, raw_path: str) -> str:
         path = Path(raw_path)
@@ -166,6 +182,15 @@ class DashboardApi:
         except ValueError:
             return ""
         return "/batch-files/" + relative.as_posix()
+
+    def _read_text_tail(self, path: Path, max_lines: int = 80) -> str:
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return ""
+        return "\n".join(lines[-max_lines:])
 
     def _static(self, name: str, content_type: str) -> tuple[int, str, bytes]:
         path = Path(__file__).resolve().parent / "static" / name
@@ -190,6 +215,12 @@ class DashboardServer:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
+                self._send_response(send_body=True)
+
+            def do_HEAD(self) -> None:  # noqa: N802
+                self._send_response(send_body=False)
+
+            def _send_response(self, send_body: bool) -> None:
                 parsed = urlparse(self.path)
                 extra_headers = {}
                 if parsed.path.startswith("/batch-files/"):
@@ -205,7 +236,8 @@ class DashboardServer:
                 for name, value in extra_headers.items():
                     self.send_header(name, value)
                 self.end_headers()
-                self.wfile.write(body)
+                if send_body:
+                    self.wfile.write(body)
 
             def log_message(self, format: str, *args) -> None:
                 logging.debug("dashboard %s", format % args)

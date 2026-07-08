@@ -139,14 +139,27 @@ def _check_existing_file(raw_path: Any, label: str, batch_dir: Path, failures: l
     if not raw_path:
         failures.append(f"{label} path is missing")
         return
-    path = Path(str(raw_path))
-    if not path.is_absolute():
-        path = batch_dir.parent / path
+    path = _resolve_output_path(raw_path, batch_dir)
     if not path.is_file():
         failures.append(f"{label} not found: {raw_path}")
         return
     if path.stat().st_size <= 0:
         failures.append(f"{label} is empty: {raw_path}")
+
+
+def _resolve_output_path(raw_path: Any, batch_dir: Path) -> Path:
+    path = Path(str(raw_path))
+    if path.is_absolute():
+        return path
+    candidates = (
+        path,
+        batch_dir / path,
+        batch_dir.parent / path,
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return path
 
 
 def _to_int(value: Any) -> int:

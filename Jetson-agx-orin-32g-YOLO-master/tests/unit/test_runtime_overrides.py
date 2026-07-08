@@ -77,6 +77,30 @@ class RuntimeOverrideTests(unittest.TestCase):
             runtime_text = updated.deepstream.infer_config_path.read_text(encoding="utf-8")
             self.assertIn("# filter-out-class-ids=", runtime_text)
 
+    def test_runtime_dir_isolated_per_run_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            infer_config = root / "infer.txt"
+            runtime_dir = root / "run-001" / ".runtime"
+            infer_config.write_text(
+                "[property]\n\n[class-attrs-all]\npre-cluster-threshold=0.25\n",
+                encoding="utf-8",
+            )
+            settings = AppSettings(deepstream=DeepStreamSettings(infer_config_path=infer_config))
+
+            updated = apply_runtime_overrides(
+                settings,
+                confidence_threshold=0.4,
+                runtime_dir=runtime_dir,
+            )
+
+            self.assertEqual(updated.deepstream.infer_config_path, runtime_dir / "infer.txt")
+            self.assertTrue(updated.deepstream.infer_config_path.exists())
+            self.assertIn(
+                "pre-cluster-threshold=0.4000",
+                updated.deepstream.infer_config_path.read_text(encoding="utf-8"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

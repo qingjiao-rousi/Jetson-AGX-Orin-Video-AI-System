@@ -29,10 +29,13 @@ class PersonBatchSummaryTests(unittest.TestCase):
                         "started_at": "2026-07-07T10:00:00-04:00",
                         "finished_at": "2026-07-07T10:00:10-04:00",
                         "error": "",
+                        "log_path": str(ok_dir / "run.log"),
+                        "batch_jobs": 8,
                     }
                 ),
                 encoding="utf-8",
             )
+            (ok_dir / "run.log").write_text("done\n", encoding="utf-8")
             (ok_dir / "analytics_summary.json").write_text(
                 json.dumps(
                     {
@@ -78,11 +81,20 @@ class PersonBatchSummaryTests(unittest.TestCase):
         self.assertEqual(summary["video_count"], 2)
         self.assertEqual(summary["processed_count"], 1)
         self.assertEqual(summary["failed_count"], 1)
+        self.assertEqual(summary["batch_jobs"], 8)
+        self.assertEqual(summary["total_duration_seconds"], 61.0)
+        self.assertEqual(summary["total_frame_count"], 100)
+        self.assertAlmostEqual(summary["processing_fps"], 1.639)
         self.assertEqual(summary["total_unique_persons_sum"], 3)
         self.assertEqual(summary["line_crossing_in_sum"], 6)
         self.assertEqual(summary["line_crossing_out_sum"], 1)
         self.assertEqual(summary["videos"][0]["roi_unique_persons"], {"full": 3, "left": 1})
         self.assertEqual(summary["videos"][0]["streams"]["stream-0"]["frame_count"], 100)
+        self.assertEqual(summary["videos"][0]["total_frame_count"], 100)
+        self.assertEqual(summary["videos"][0]["processing_fps"], 10.0)
+        self.assertEqual(summary["videos"][0]["duration_seconds"], 10.0)
+        self.assertIn("log_path", summary["videos"][0])
+        self.assertIn("output_summary", summary["videos"][0]["file_sizes"])
         self.assertEqual(summary["videos"][1]["error"], "probe failed")
 
 

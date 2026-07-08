@@ -192,6 +192,85 @@ scripts/check_env.sh
 
 ## 4. 推荐运行方式
 
+### 4.1 最终验收入口
+
+当前接近落地版本推荐使用一条命令完成：
+
+```text
+8 路本地 MP4 并行处理 -> 输出视频/JSONL/summary/quality -> 启动本地 UI 展示结果
+```
+
+运行：
+
+```bash
+cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
+source scripts/env.sh
+
+scripts/run_acceptance_ui.sh
+```
+
+默认输入：
+
+```text
+/home/nvidia/Desktop/YOLO/video
+```
+
+默认输出：
+
+```text
+outputs/acceptance_latest
+```
+
+默认 UI：
+
+```text
+http://127.0.0.1:8090
+```
+
+该命令会先执行默认 8 路并行批量 analytics，然后自动启动本地 Web UI。浏览器打开上面的地址后，可以在“批量视频结果看板”里查看每路视频的 overlay 播放、人数、ROI、越线、FPS、质量状态和错误/复核原因。
+
+UI 批量看板包含：
+
+- 验收结论：通过、需复核或失败。
+- 筛选：全部、复核、失败、有人、无人、FPS 异常、帧不连续。
+- 单视频详情：人数、ROI、越线、时间轴 FPS、处理 FPS、总帧数、耗时、文件大小和 `run.log` 摘要。
+- 一键打开：`batch_summary.json`、`batch_quality.json`、HTML 报告、CSV 报告。
+- 单视频输出入口：播放视频、overlay 文件、JSONL、summary、run.log。
+- 性能基准：总耗时、`BATCH_JOBS` 并发数和处理 FPS。
+
+注意：UI 的主播放器默认播放 `person_analytics.mp4`，这是 DeepStream 硬件编码输出的 H.264 MP4，浏览器兼容性更好。`person_analytics_overlay.mp4` 由 OpenCV 离线绘制 ROI/line 后生成，部分浏览器可能不支持其编码，页面会保留 `overlay文件` 链接用于下载或外部播放器查看。
+
+离线验收模式下，页面会优先展示本次批量结果、质量状态、时间轴 FPS 和处理 FPS。旧的实时视频墙、Pipeline 日志和原始调试快照已经折叠到“高级实时调试区”，避免干扰当前离线批量验收主流程。实时 GPU/资源监控后续在服务化/实时流阶段再接入。
+
+两个 FPS 的含义不同：
+
+- 时间轴 FPS：由输出 JSONL 的时间轴估算，主要反映视频帧时间戳和离线结果时间线。
+- 处理 FPS：`总帧数 / 实际运行耗时`，更适合判断当前机器处理吞吐，以及推理、解码、编码或磁盘写入是否成为瓶颈。
+
+如果只想跑验收，不启动 UI：
+
+```bash
+START_UI=0 scripts/run_acceptance_ui.sh
+```
+
+如果要指定输入和输出目录：
+
+```bash
+scripts/run_acceptance_ui.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/acceptance_run_001
+```
+
+如果要临时使用 4 路并行：
+
+```bash
+BATCH_JOBS=4 scripts/run_acceptance_ui.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/acceptance_4
+```
+
+### 4.2 单视频运行
+
 推荐使用最终统一入口：
 
 ```bash
@@ -912,15 +991,15 @@ python3 scripts/summarize_person_analytics.py \
 
 ## 14. 批量视频处理
 
-如果 `/home/nvidia/Desktop/YOLO/video` 中有多个 MP4，可以使用批量入口顺序处理。当前批量模式是 **离线多文件批处理**：
+如果 `/home/nvidia/Desktop/YOLO/video` 中有多个 MP4，可以使用批量入口处理。当前批量模式是 **离线多文件批处理**：
 
 ```text
-多个本地 MP4 -> 逐个调用单视频 analytics -> 每个视频独立输出 -> 汇总 batch_summary.json
+多个本地 MP4 -> 调用单视频 analytics -> 每个视频独立输出 -> 汇总 batch_summary.json
 ```
 
-它不是实时多路摄像头同时拉流，也不是 DeepStream 单 pipeline 多 source 并发处理。这样做的好处是先把八个离线视频稳定跑通，便于验收模型、tracker、ROI、越线、时间轴和输出文件。
+它不是实时多路摄像头同时拉流，也不是 DeepStream 单 pipeline 多 source 合批处理。它可以通过 `BATCH_JOBS` 做 **受控并行**：同时启动多个独立的单视频 analytics 进程，每个视频写入自己的输出目录。
 
-运行八个视频：
+运行八个视频。当前落地版默认使用 8 路并行：
 
 ```bash
 cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
@@ -928,6 +1007,53 @@ cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
 scripts/run_person_analytics_batch.sh \
   /home/nvidia/Desktop/YOLO/video \
   outputs/batch
+```
+
+更推荐使用最终验收入口，它会跑完批量后直接启动 UI：
+
+```bash
+scripts/run_acceptance_ui.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/acceptance_latest
+```
+
+等价于：
+
+```bash
+BATCH_JOBS=8 scripts/run_person_analytics_batch.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/batch
+```
+
+如果需要回退到最稳的串行模式：
+
+```bash
+BATCH_JOBS=1 scripts/run_person_analytics_batch.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/batch
+```
+
+如果要使用 4 路并行做瓶颈对比：
+
+```bash
+BATCH_JOBS=4 scripts/run_person_analytics_batch.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/batch
+```
+
+当前先保留 8 路并行作为项目接近落地版本的默认策略，后续再围绕瓶颈做优化。多个进程会同时争用：
+
+- GPU/TensorRT
+- NVDEC/NVENC
+- 内存带宽
+- 磁盘写入
+
+后续瓶颈优化时建议对比：
+
+```text
+BATCH_JOBS=1 -> 串行基准
+BATCH_JOBS=4 -> 常用稳定并发点
+BATCH_JOBS=8 -> 当前落地默认策略
 ```
 
 默认匹配：
@@ -946,6 +1072,8 @@ outputs/batch/
     analytics_summary.json
     person_analytics_overlay.mp4
     run_metadata.json
+    run.log
+    .runtime/
   002_video_b/
     person_analytics.mp4
     results.jsonl
@@ -959,6 +1087,11 @@ outputs/batch/
 ```
 
 每个子目录对应一个输入视频。`run_metadata.json` 记录该视频的输入路径、开始时间、结束时间、退出码和运行状态。
+
+并行模式下每个视频还会写入：
+
+- `run.log`：该视频完整运行日志，方便定位单个视频失败原因。
+- `.runtime/`：该视频独立的 DeepStream runtime config，避免多个并行进程同时覆盖同一个配置文件。
 
 `batch_summary.json` 汇总所有视频，核心字段包括：
 
@@ -1406,29 +1539,246 @@ cp /home/nvidia/Desktop/YOLO/export_yolov8_ds/labels.txt models/labels.txt
 
 然后重新生成 engine。
 
-## 20. 下一步建议
+## 20. 项目完成度与后续路线
 
-当前 tracker、离线去重统计、ROI 统计、越线计数、统一 analytics summary、可视化叠加、离线时间轴和批量视频处理都已具备后，建议下一阶段先做 **批量结果报表与质量对比**。
+当前项目已经进入 **离线批量验收版本基本完成** 阶段。按当前目标“本地 8 个 MP4 输入、本地 MP4 输出、person JSONL 输出、批量统计和 UI 查看结果”来评估，完成度约为 **75% 到 80%**。
+
+已经完成的核心闭环：
+
+```text
+8 路本地 MP4 输入
+-> 8 路并行 DeepStream YOLOv8 person analytics
+-> 每路输出 MP4 / overlay MP4 / JSONL / analytics_summary.json / run.log
+-> batch_summary.json / batch_quality.json / CSV / HTML report
+-> 本地 UI 展示验收结果、质量状态、输出视频和报告入口
+```
+
+后续任务建议按照下面顺序推进。
+
+### 20.1 性能基准与瓶颈定位
 
 目标：
 
 ```text
-batch videos -> batch_summary.json -> CSV/HTML report -> 人工复核 -> 参数调优
+确认当前 8 路并行的真实性能上限，并判断瓶颈来自哪里。
 ```
 
-原因是：RTSP/RTMP 摄像头输入已经明确放到最后再做，当前更值得先把八个离线视频的结果变成可比较、可复核、可交付的报表。
+原因：
 
-建议后续先补：
+当前 `BATCH_JOBS=8` 已经可以跑通，但 4 路和 8 路耗时接近，说明系统可能已经遇到瓶颈。瓶颈可能来自硬件解码、TensorRT 推理、OSD、硬件编码、磁盘写入，或者 8 个独立进程之间的资源争用。
 
-- `batch_summary.csv`：每个视频一行，包含去重人数、ROI 人数、越线 in/out、帧连续性、估算 FPS、运行状态。
-- `batch_report.html`：可打开的离线报告，包含每个视频的输出链接、关键统计和失败原因。
-- 批量质量检查：标记 JSONL 为空、无 track、无 person、时间轴不连续、视频输出不可解析等异常。
-- 参数复核：基于八个视频结果调整 `CONFIDENCE_THRESHOLD`、ROI、line 和输出尺寸。
+建议方案：
 
-再往后才适合进入：
+1. 固定同一批 8 个视频，分别跑：
 
-1. 长视频稳定性测试。
-2. 性能记录与资源占用统计。
-3. RTSP/RTMP 摄像头拉流。
-4. 多路实时输入。
-5. 服务化与部署收口。
+```bash
+BATCH_JOBS=1 scripts/run_person_analytics_batch.sh /home/nvidia/Desktop/YOLO/video outputs/bench_jobs_1
+BATCH_JOBS=4 scripts/run_person_analytics_batch.sh /home/nvidia/Desktop/YOLO/video outputs/bench_jobs_4
+BATCH_JOBS=8 scripts/run_person_analytics_batch.sh /home/nvidia/Desktop/YOLO/video outputs/bench_jobs_8
+```
+
+2. 对比每次输出中的：
+
+- `total_duration_seconds`
+- `processing_fps`
+- 每路 `duration_seconds`
+- 每路 `processing_fps`
+- `batch_quality.json`
+
+3. 后续可以新增一个 benchmark 脚本自动汇总：
+
+```text
+scripts/benchmark_batch_jobs.sh
+outputs/benchmarks/benchmark_summary.json
+outputs/benchmarks/benchmark_report.html
+```
+
+验收标准：
+
+- 能明确回答 `BATCH_JOBS=1/4/8` 哪个更适合作为默认运行方式。
+- 能判断 8 路并行是否真的带来收益。
+- 能根据处理 FPS 区分“源视频帧率低”和“系统处理慢”。
+
+### 20.2 多路并行架构升级
+
+目标：
+
+```text
+从 8 个独立进程并行，升级到更接近生产的单 DeepStream pipeline 多路输入。
+```
+
+当前方案：
+
+```text
+8 个视频 -> 8 个 python/deepstream 进程 -> 8 份独立输出
+```
+
+优点是实现简单、隔离性强、容易验收；缺点是多个进程会重复加载模型、重复占用 TensorRT/GPU/编码资源，长期不适合作为真正实时多路架构。
+
+推荐生产方向：
+
+```text
+8 个 source bin
+-> nvstreammux batch-size=8
+-> nvinfer batch 推理
+-> tracker / analytics / osd
+-> 分路输出或合成预览
+```
+
+建议方案：
+
+1. 保留当前 8 进程批处理作为离线验收和回归测试工具。
+2. 新增一个多 source pipeline 配置，不影响当前默认入口。
+3. 先实现本地 8 个 MP4 的单 pipeline 多路输入。
+4. 再把 RTSP/RTMP 摄像头接入放到最后。
+
+验收标准：
+
+- 单进程能同时接入 8 个本地 MP4。
+- `nvstreammux batch-size=8` 正常工作。
+- 每路仍能输出 `stream_id`、`track_id`、JSONL 和统计结果。
+- 总处理 FPS 相比 8 独立进程有明确对比数据。
+
+### 20.3 质量规则定稿
+
+目标：
+
+```text
+明确什么情况算 passed、review、failed，避免 UI 只显示结果但没有验收口径。
+```
+
+当前已有质量检查：
+
+- 输出视频是否存在。
+- overlay 视频是否存在。
+- JSONL 是否存在。
+- analytics summary 是否存在。
+- 帧是否连续。
+- FPS 是否异常。
+- 是否有失败原因。
+
+建议继续定稿的规则：
+
+- JSONL 为空：通常应为 `failed`。
+- 没有 person：根据业务场景决定是 `passed` 还是 `review`。
+- FPS 低：建议先设为 `review`，除非低到影响交付。
+- 帧不连续：建议设为 `review` 或 `failed`，取决于断帧比例。
+- 输出视频损坏：必须 `failed`。
+- tracker ID 大量跳变：建议新增 `review` 规则。
+
+验收标准：
+
+- 每个 `review/failed` 都有明确中文原因。
+- UI 和 `batch_quality.json` 的结论一致。
+- 项目交付时可以解释“为什么这 8 个视频通过/复核/失败”。
+
+### 20.4 长视频稳定性测试
+
+目标：
+
+```text
+确认系统不只是在 10 秒短视频上可用，也能处理更长视频。
+```
+
+建议方案：
+
+1. 准备 3 类输入：
+
+- 1 分钟视频。
+- 10 分钟视频。
+- 30 分钟以上视频。
+
+2. 运行同一套验收入口：
+
+```bash
+scripts/run_acceptance_ui.sh /path/to/long_video_dir outputs/acceptance_long
+```
+
+3. 重点观察：
+
+- 输出视频是否完整。
+- JSONL 是否持续写入。
+- tracker ID 是否稳定。
+- 内存是否持续增长。
+- `processing_fps` 是否随时间下降。
+
+验收标准：
+
+- 长视频输出文件可播放。
+- `batch_quality.json` 不出现异常失败。
+- 处理过程无明显内存泄漏或进程卡死。
+
+### 20.5 RTSP/RTMP 摄像头接入
+
+目标：
+
+```text
+把当前离线 MP4 能力迁移到真实摄像头输入。
+```
+
+当前决定：
+
+RTSP/RTMP 先保留代码方向，但不作为当前阶段优先实现。等离线批量、多路性能和质量规则稳定后再做。
+
+建议方案：
+
+1. 先接 1 路 RTSP。
+2. 处理断流重连、网络抖动、延迟和时间戳。
+3. 再扩展到多路 RTSP。
+4. 最后考虑是否需要 RTMP/HLS/WebRTC 预览输出。
+
+验收标准：
+
+- 摄像头断开后能恢复或明确报错。
+- UI 能显示在线、断流、重连、失败状态。
+- JSONL 中时间戳能区分处理时间和源视频时间。
+
+### 20.6 服务化与部署收口
+
+目标：
+
+```text
+让项目从“终端手动运行”变成“设备上稳定运行”。
+```
+
+建议方案：
+
+- systemd 服务。
+- 开机自启动。
+- 日志轮转。
+- 输出目录自动清理。
+- 异常退出自动恢复。
+- 固定配置文件和模型路径。
+- 固定 Jetson 环境依赖版本。
+
+验收标准：
+
+- 重启 Jetson 后服务能自动启动。
+- UI 能访问最新结果。
+- 错误日志可追踪。
+- 输出文件不会无限增长占满磁盘。
+
+### 20.7 最终交付文档
+
+目标：
+
+```text
+让别人拿到 Jetson 后，能按照文档独立运行、验收和排查。
+```
+
+最终文档至少需要包含：
+
+- 一条命令运行验收。
+- UI 页面说明。
+- 输入视频目录规范。
+- 输出文件说明。
+- 模型和 engine 重新生成方法。
+- 质量状态解释。
+- 常见错误排查。
+- Jetson 环境依赖版本。
+- 性能基准结果。
+
+验收标准：
+
+- 新用户不依赖开发者口头说明，也能跑通离线 8 路验收。
+- 遇到常见错误能按文档定位到环境、模型、parser、视频编码或路径问题。

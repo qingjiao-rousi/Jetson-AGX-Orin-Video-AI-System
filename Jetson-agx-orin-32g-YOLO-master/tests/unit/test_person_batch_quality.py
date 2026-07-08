@@ -99,6 +99,61 @@ class PersonBatchQualityTests(unittest.TestCase):
         self.assertEqual(quality["videos"][2]["quality_status"], "failed")
         self.assertIn("pipeline failed", quality["videos"][2]["failures"])
 
+    def test_check_batch_resolves_project_relative_output_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            batch_dir = root / "outputs" / "batch_parallel_8"
+            output_dir = batch_dir / "001_1"
+            output_dir.mkdir(parents=True)
+            for name in (
+                "person_analytics.mp4",
+                "person_analytics_overlay.mp4",
+                "results.jsonl",
+                "analytics_summary.json",
+            ):
+                (output_dir / name).write_text("x", encoding="utf-8")
+
+            summary_path = batch_dir / "batch_summary.json"
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "videos": [
+                            {
+                                "input_video": "/videos/1.mp4",
+                                "status": "ok",
+                                "total_unique_persons": 2,
+                                "output_video": str(Path("outputs/batch_parallel_8/001_1/person_analytics.mp4")),
+                                "output_overlay_video": str(
+                                    Path("outputs/batch_parallel_8/001_1/person_analytics_overlay.mp4")
+                                ),
+                                "output_jsonl": str(Path("outputs/batch_parallel_8/001_1/results.jsonl")),
+                                "output_summary": str(Path("outputs/batch_parallel_8/001_1/analytics_summary.json")),
+                                "streams": {
+                                    "stream-0": {
+                                        "frame_count": 100,
+                                        "is_frame_continuous": True,
+                                        "estimated_fps": 50.0,
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            old_cwd = Path.cwd()
+            try:
+                import os
+
+                os.chdir(root)
+                quality = check_batch(summary_path)
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertEqual(quality["passed_count"], 1)
+        self.assertEqual(quality["failed_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

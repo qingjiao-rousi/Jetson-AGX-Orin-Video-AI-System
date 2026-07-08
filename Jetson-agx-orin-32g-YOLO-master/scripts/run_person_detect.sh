@@ -13,6 +13,7 @@ Environment overrides:
   OUTPUT_WIDTH=1280
   OUTPUT_HEIGHT=720
   CONFIDENCE_THRESHOLD=0.25
+  RUNTIME_DIR=outputs/runtime
 
 Example:
   scripts/run_person_detect.sh \
@@ -34,13 +35,14 @@ OUTPUT_WIDTH="${OUTPUT_WIDTH:-1280}"
 OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-720}"
 CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-0.25}"
 ENABLE_WEB="${ENABLE_WEB:-0}"
+RUNTIME_DIR="${RUNTIME_DIR:-outputs/runtime}"
 
 if [ ! -f "$INPUT_VIDEO" ]; then
     echo "Input video not found: $INPUT_VIDEO" >&2
     exit 1
 fi
 
-mkdir -p "$(dirname "$OUTPUT_VIDEO")" "$(dirname "$OUTPUT_JSON")" outputs/runtime
+mkdir -p "$(dirname "$OUTPUT_VIDEO")" "$(dirname "$OUTPUT_JSON")" "$RUNTIME_DIR"
 rm -f "$OUTPUT_VIDEO" "$OUTPUT_JSON"
 
 # shellcheck disable=SC1091
@@ -53,7 +55,8 @@ APP_ARGS=(
     --output-json "$OUTPUT_JSON" \
     --output-width "$OUTPUT_WIDTH" \
     --output-height "$OUTPUT_HEIGHT" \
-    --confidence-threshold "$CONFIDENCE_THRESHOLD"
+    --confidence-threshold "$CONFIDENCE_THRESHOLD" \
+    --runtime-dir "$RUNTIME_DIR"
 )
 
 if [ "$ENABLE_WEB" != "1" ]; then

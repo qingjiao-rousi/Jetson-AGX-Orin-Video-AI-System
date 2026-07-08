@@ -51,6 +51,8 @@ class DashboardApiTests(unittest.TestCase):
             output_dir.mkdir()
             video_path = output_dir / "person_analytics_overlay.mp4"
             video_path.write_bytes(b"mp4")
+            log_path = output_dir / "run.log"
+            log_path.write_text("line1\nline2\n", encoding="utf-8")
             (batch_dir / "batch_summary.json").write_text(
                 json.dumps(
                     {
@@ -60,6 +62,7 @@ class DashboardApiTests(unittest.TestCase):
                                 "input_video": "/videos/a.mp4",
                                 "status": "ok",
                                 "output_overlay_video": str(video_path),
+                                "log_path": str(log_path),
                             }
                         ],
                     }
@@ -82,6 +85,8 @@ class DashboardApiTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (batch_dir / "batch_report.html").write_text("<html></html>", encoding="utf-8")
+            (batch_dir / "batch_summary.csv").write_text("video,status\n", encoding="utf-8")
             api = DashboardApi(FakeDebugService(), WebSettings(enabled=True, batch_dir=batch_dir))
 
             status, content_type, body = api.route("/api/batch/dashboard", {})
@@ -91,6 +96,12 @@ class DashboardApiTests(unittest.TestCase):
             self.assertIn("application/json", content_type)
             self.assertEqual(payload["videos"][0]["quality"]["quality_status"], "passed")
             self.assertEqual(payload["videos"][0]["output_overlay_video_url"], "/batch-files/001_a/person_analytics_overlay.mp4")
+            self.assertEqual(payload["videos"][0]["log_path_url"], "/batch-files/001_a/run.log")
+            self.assertEqual(payload["artifacts"]["summary"], "/batch-files/batch_summary.json")
+            self.assertEqual(payload["artifacts"]["quality"], "/batch-files/batch_quality.json")
+            self.assertEqual(payload["artifacts"]["html_report"], "/batch-files/batch_report.html")
+            self.assertEqual(payload["artifacts"]["csv_report"], "/batch-files/batch_summary.csv")
+            self.assertIn("line2", payload["videos"][0]["log_tail"])
 
             status, content_type, body = api.route("/batch-files/001_a/person_analytics_overlay.mp4", {})
 
