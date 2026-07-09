@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from app.infrastructure.web.dashboard import DashboardApi
+from app.infrastructure.web.dashboard import DashboardApi, DashboardServer
 from app.settings import WebSettings
 
 
@@ -119,6 +119,79 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(body, b"p4")
             self.assertEqual(headers["Accept-Ranges"], "bytes")
             self.assertEqual(headers["Content-Range"], "bytes 1-2/3")
+
+    def test_multifile_dashboard_route_returns_summary_quality_and_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            multifile_dir = Path(tmp)
+            (multifile_dir / "multifile_preview.mp4").write_bytes(b"mp4")
+            (multifile_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+            (multifile_dir / "run.log").write_text("line1\nline2\n", encoding="utf-8")
+            (multifile_dir / "multifile_summary.json").write_text(
+                json.dumps({"observed_stream_count": 8, "expected_stream_count": 8, "streams": {}}),
+                encoding="utf-8",
+            )
+            (multifile_dir / "multifile_quality.json").write_text(
+                json.dumps({"quality_status": "passed", "streams": []}),
+                encoding="utf-8",
+            )
+            api = DashboardApi(FakeDebugService(), WebSettings(enabled=True, multifile_dir=multifile_dir))
+
+            status, content_type, body = api.route("/api/multifile/dashboard", {})
+            payload = json.loads(body.decode("utf-8"))
+
+            self.assertEqual(status, 200)
+            self.assertIn("application/json", content_type)
+            self.assertEqual(payload["quality"]["quality_status"], "passed")
+            self.assertEqual(payload["artifacts"]["tiled_video"], "/multifile-files/multifile_preview.mp4")
+            self.assertEqual(payload["artifacts"]["summary"], "/multifile-files/multifile_summary.json")
+            self.assertIn("line2", payload["log_tail"])
+
+            status, content_type, body, headers = api.multifile_file_response(
+                "multifile_preview.mp4",
+                "bytes=1-2",
+            )
+
+            self.assertEqual(status, 206)
+            self.assertIn("video/mp4", content_type)
+            self.assertEqual(body, b"p4")
+            self.assertEqual(headers["Content-Range"], "bytes 1-2/3")
+
+    def test_server_stop_joins_http_thread(self) -> None:
+        server = DashboardServer(FakeDebugService(), WebSettings(enabled=True))
+
+        class FakeHttpd:
+            def __init__(self) -> None:
+                self.shutdown_called = False
+                self.closed = False
+
+            def shutdown(self) -> None:
+                self.shutdown_called = True
+
+            def server_close(self) -> None:
+                self.closed = True
+
+        class FakeThread:
+            def __init__(self) -> None:
+                self.joined_with = None
+
+            def is_alive(self) -> bool:
+                return True
+
+            def join(self, timeout=None) -> None:
+                self.joined_with = timeout
+
+        httpd = FakeHttpd()
+        thread = FakeThread()
+        server._httpd = httpd
+        server._thread = thread
+
+        server.stop()
+
+        self.assertTrue(httpd.shutdown_called)
+        self.assertTrue(httpd.closed)
+        self.assertEqual(thread.joined_with, 2.0)
+        self.assertIsNone(server._httpd)
+        self.assertIsNone(server._thread)
 
 
 if __name__ == "__main__":

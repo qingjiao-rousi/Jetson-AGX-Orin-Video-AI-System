@@ -33,13 +33,25 @@ def summarize_timeline(path: Path) -> dict[str, Any]:
 
     streams: dict[str, dict[str, Any]] = {}
     total_lines = 0
+    valid_json_lines = 0
+    malformed_json_lines: list[dict[str, Any]] = []
 
     with path.open("r", encoding="utf-8") as f:
-        for line in f:
+        for line_number, line in enumerate(f, start=1):
             if not line.strip():
                 continue
             total_lines += 1
-            payload = json.loads(line)
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                malformed_json_lines.append(
+                    {
+                        "line_number": line_number,
+                        "error": str(exc),
+                    }
+                )
+                continue
+            valid_json_lines += 1
             stream_id = str(payload.get("stream_id", "stream-0"))
             frame_id = int(payload.get("frame_id", total_lines - 1))
             timestamp_text = payload.get("timestamp")
@@ -67,6 +79,9 @@ def summarize_timeline(path: Path) -> dict[str, Any]:
     return {
         "input_jsonl": str(path),
         "total_lines": total_lines,
+        "valid_json_lines": valid_json_lines,
+        "malformed_json_line_count": len(malformed_json_lines),
+        "malformed_json_lines": malformed_json_lines[:20],
         "stream_count": len(stream_summaries),
         "streams": stream_summaries,
     }

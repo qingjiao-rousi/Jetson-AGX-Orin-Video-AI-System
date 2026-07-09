@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from threading import Event, Thread
+from threading import Event, Thread, current_thread
 
 from app.domain.entities import PipelineState
 from app.infrastructure.pipeline.builder import PipelineBlueprint
@@ -42,11 +42,14 @@ class PipelineManager:
 
     def stop(self) -> None:
         self._stop_event.set()
+        bus_thread = self._bus_thread
         if self._runtime is not None:
             pipeline = self._runtime.get("pipeline")
             gst = self._runtime.get("gst")
             if pipeline is not None and gst is not None and hasattr(pipeline, "set_state"):
                 pipeline.set_state(gst.State.NULL)
+        if bus_thread is not None and bus_thread is not current_thread() and bus_thread.is_alive():
+            bus_thread.join(timeout=1.0)
         self._running = False
         self._pipeline = None
         self._runtime = None

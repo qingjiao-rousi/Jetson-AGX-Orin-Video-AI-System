@@ -137,6 +137,27 @@ class PipelineManagerBusTests(unittest.TestCase):
         self.assertEqual(state["pipeline_state"], "NULL")
         self.assertFalse(state["running"])
 
+    def test_stop_joins_existing_bus_thread(self) -> None:
+        manager = PipelineManager(FakeBuilder())
+
+        class FakeThread:
+            def __init__(self) -> None:
+                self.joined_with = None
+
+            def is_alive(self) -> bool:
+                return True
+
+            def join(self, timeout=None) -> None:
+                self.joined_with = timeout
+
+        bus_thread = FakeThread()
+        manager._bus_thread = bus_thread
+
+        manager.stop()
+
+        self.assertEqual(bus_thread.joined_with, 1.0)
+        self.assertIsNone(manager._bus_thread)
+
     def test_state_changed_message_updates_pipeline_state(self) -> None:
         manager = PipelineManager(FakeBuilder())
         manager.start()

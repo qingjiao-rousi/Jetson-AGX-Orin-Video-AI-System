@@ -4,10 +4,11 @@ import unittest
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from app.infrastructure.pipeline.builder import PipelineBuilder
+from app.infrastructure.pipeline.builder import GStreamerRuntimeFactory, PipelineBuilder
 from app.settings import (
     AppSettings,
     DeepStreamSettings,
@@ -19,6 +20,44 @@ from app.settings import (
 
 
 class PipelineBuilderRuntimeTests(unittest.TestCase):
+    def test_gstreamer_import_failure_is_logged(self) -> None:
+        factory = GStreamerRuntimeFactory.__new__(GStreamerRuntimeFactory)
+        factory._gst = object()
+        factory._available = True
+
+        original_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "gi":
+                raise RuntimeError("gi unavailable")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            with self.assertLogs(level="WARNING") as logs:
+                factory._load()
+
+        self.assertIsNone(factory._gst)
+        self.assertFalse(factory._available)
+        self.assertTrue(any("GStreamer runtime unavailable" in entry for entry in logs.output))
+
+    def test_pyds_import_failure_is_logged(self) -> None:
+        factory = GStreamerRuntimeFactory.__new__(GStreamerRuntimeFactory)
+        factory._pyds = object()
+
+        original_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "pyds":
+                raise RuntimeError("pyds unavailable")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            with self.assertLogs(level="WARNING") as logs:
+                factory._load_pyds()
+
+        self.assertIsNone(factory._pyds)
+        self.assertTrue(any("DeepStream pyds bindings unavailable" in entry for entry in logs.output))
+
     def test_build_runtime_exposes_static_and_dynamic_link_plans(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "sample.mp4"
@@ -34,7 +73,7 @@ class PipelineBuilderRuntimeTests(unittest.TestCase):
                 output=OutputSettings(enable_jsonl=True),
                 optimization=OptimizationSettings(),
                 deepstream=DeepStreamSettings(
-                    model_engine_path=Path("models/yolov8n.engine"),
+                    model_engine_path=Path("models/yolov8s.engine"),
                     custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
                     tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
                     infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
@@ -73,7 +112,7 @@ class PipelineBuilderRuntimeTests(unittest.TestCase):
                 output=OutputSettings(enable_jsonl=True),
                 optimization=OptimizationSettings(),
                 deepstream=DeepStreamSettings(
-                    model_engine_path=Path("models/yolov8n.engine"),
+                    model_engine_path=Path("models/yolov8s.engine"),
                     custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
                     tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
                     infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
@@ -156,6 +195,50 @@ class PipelineBuilderRuntimeTests(unittest.TestCase):
             self.assertIn("pad-added", runtime["elements"]["demux-2"].handlers)
             self.assertIn("sink_0", runtime["elements"]["streammux"].requested)
             self.assertTrue(runtime["elements"]["osd"].sink_pad.probes)
+
+    def test_multisource_tiler_is_inserted_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sample_1 = Path(tmp) / "sample-1.mp4"
+            sample_2 = Path(tmp) / "sample-2.mp4"
+            sample_1.write_bytes(b"")
+            sample_2.write_bytes(b"")
+            settings = AppSettings(
+                app_name="deepstream-multifile",
+                source_count=2,
+                sources=(
+                    SourceSettings(name="local1", uri=str(sample_1), kind="file", enabled=True),
+                    SourceSettings(name="local2", uri=str(sample_2), kind="file", enabled=True),
+                ),
+                logging=LoggingSettings(),
+                output=OutputSettings(enable_jsonl=True),
+                optimization=OptimizationSettings(),
+                deepstream=DeepStreamSettings(
+                    batch_size=2,
+                    enable_tiler=True,
+                    tiler_rows=1,
+                    tiler_columns=2,
+                    tiler_width=1280,
+                    tiler_height=720,
+                    output_sink="file",
+                    output_video_path=Path(tmp) / "tiled.mp4",
+                    model_engine_path=Path("models/yolov8s.engine"),
+                    custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
+                    tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
+                    infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
+                    streammux_config_path=Path("configs/deepstream/streammux.yaml"),
+                ),
+            )
+
+            blueprint = PipelineBuilder(settings).build()
+            node_by_name = {node.name: node for node in blueprint.nodes}
+
+            self.assertIn("tiler", node_by_name)
+            self.assertEqual(node_by_name["tiler"].element, "nvmultistreamtiler")
+            self.assertEqual(node_by_name["tiler"].properties["rows"], 1)
+            self.assertEqual(node_by_name["tiler"].properties["columns"], 2)
+            self.assertIn(("tracker", "tiler"), blueprint.links)
+            self.assertIn(("tiler", "pre-osd-convert"), blueprint.links)
+            self.assertEqual(blueprint.probes, (("tiler", "sink"),))
 
 
 if __name__ == "__main__":

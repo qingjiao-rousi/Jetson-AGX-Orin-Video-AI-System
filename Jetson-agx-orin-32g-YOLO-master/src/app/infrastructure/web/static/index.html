@@ -1490,6 +1490,53 @@
       <section class="panel" style="margin: 0 28px 28px; border-radius: 12px;">
         <div class="panel-head">
           <div>
+            <h2>单 Pipeline 结果看板</h2>
+            <span id="multifile-note">读取 outputs/multifile_inproc/multifile_summary.json 与 multifile_quality.json</span>
+            <div class="artifact-links" id="multifile-artifacts"></div>
+          </div>
+          <span id="multifile-status" class="status">UNKNOWN</span>
+        </div>
+        <div class="batch-summary">
+          <div class="metric"><label>路数</label><strong id="multifile-streams" class="metric-value">-</strong><span>observed / expected</span></div>
+          <div class="metric"><label>总帧数</label><strong id="multifile-frames" class="metric-value">-</strong><span>JSONL rows by stream</span></div>
+          <div class="metric"><label>检测数</label><strong id="multifile-detections" class="metric-value">-</strong><span>person detections</span></div>
+          <div class="metric"><label>去重人数</label><strong id="multifile-persons" class="metric-value">-</strong><span>stable tracks</span></div>
+          <div class="metric"><label>需复核路数</label><strong id="multifile-review" class="metric-value warn">-</strong><span>quality review</span></div>
+          <div class="metric"><label>失败路数</label><strong id="multifile-failed" class="metric-value">-</strong><span>quality failed</span></div>
+        </div>
+        <div class="batch-layout">
+          <div class="batch-table-wrap">
+            <table class="batch-table">
+              <thead>
+                <tr>
+                  <th>stream</th>
+                  <th>质量</th>
+                  <th>帧数</th>
+                  <th>检测数</th>
+                  <th>Track观测</th>
+                  <th>去重人数</th>
+                  <th>时间轴 FPS</th>
+                  <th>连续</th>
+                  <th>原因</th>
+                </tr>
+              </thead>
+              <tbody id="multifile-table-body">
+                <tr><td colspan="9">等待单 Pipeline 结果加载...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <aside class="batch-player">
+            <video id="multifile-video" controls preload="metadata"></video>
+          </aside>
+          <div class="batch-detail" id="multifile-detail">
+            <div class="empty-state">运行 scripts/run_multifile_inproc.sh 后显示单 pipeline 质量和 run.log 摘要</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" style="margin: 0 28px 28px; border-radius: 12px;">
+        <div class="panel-head">
+          <div>
             <h2>批量视频结果看板</h2>
             <span id="batch-note">读取 outputs/batch/batch_summary.json 与 batch_quality.json</span>
             <div class="artifact-links" id="batch-artifacts"></div>

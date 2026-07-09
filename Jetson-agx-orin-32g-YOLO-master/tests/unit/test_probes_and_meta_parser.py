@@ -52,6 +52,17 @@ class ProbeRegistryTests(unittest.TestCase):
         self.assertEqual(captured["result"].stream_id, "stream-2")
         self.assertEqual(len(captured["result"].detections), 1)
 
+    def test_probe_events_are_bounded(self) -> None:
+        registry = ProbeRegistry()
+        parser = MetaParser()
+        registry.register_frame_result_handler(lambda result: None)
+
+        for frame_id in range(150):
+            registry.emit_probe_payload({"frame_id": frame_id}, parser)
+
+        self.assertEqual(len(registry.events()), 100)
+        self.assertEqual(registry.events()[-1], "frame_result_emitted")
+
 
 class MetaParserTests(unittest.TestCase):
     def test_parse_supports_deepstream_style_object_meta(self) -> None:
@@ -140,6 +151,34 @@ class MetaParserTests(unittest.TestCase):
         self.assertEqual(result.tracks[0].track_id, 123)
         self.assertEqual(result.tracks[0].confidence, 0.76)
 
+    def test_parse_normalizes_iso_timestamp_to_utc(self) -> None:
+        parser = MetaParser()
+
+        result = parser.parse({"timestamp": "2026-07-09T12:30:00+08:00"})
+
+        self.assertEqual(result.timestamp.isoformat(), "2026-07-09T04:30:00+00:00")
+
+    def test_parse_supports_epoch_nanosecond_ntp_timestamp(self) -> None:
+        parser = MetaParser()
+
+        result = parser.parse({"ntp_timestamp": 1_783_555_200_000_000_000})
+
+        self.assertEqual(result.timestamp.isoformat(), "2026-07-09T00:00:00+00:00")
+
+    def test_parse_supports_relative_buffer_pts(self) -> None:
+        parser = MetaParser()
+
+        result = parser.parse({"buf_pts": 1_500_000_000})
+
+        self.assertEqual(result.timestamp.isoformat(), "1970-01-01T00:00:01.500000+00:00")
+
+    def test_parse_uses_buffer_pts_when_timestamp_and_ntp_are_empty(self) -> None:
+        parser = MetaParser()
+
+        result = parser.parse({"timestamp": None, "ntp_timestamp": 0, "buf_pts": 2_000_000_000})
+
+        self.assertEqual(result.timestamp.isoformat(), "1970-01-01T00:00:02+00:00")
+
 
 class BuilderProbeDispatchTests(unittest.TestCase):
     def test_probe_buffer_dispatches_payload_to_registry(self) -> None:
@@ -153,7 +192,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
             output=OutputSettings(enable_jsonl=True),
             optimization=OptimizationSettings(),
             deepstream=DeepStreamSettings(
-                model_engine_path=Path("models/yolov8n.engine"),
+                model_engine_path=Path("models/yolov8s.engine"),
                 custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
                 tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
                 infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
@@ -192,7 +231,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
             output=OutputSettings(enable_jsonl=True),
             optimization=OptimizationSettings(),
             deepstream=DeepStreamSettings(
-                model_engine_path=Path("models/yolov8n.engine"),
+                model_engine_path=Path("models/yolov8s.engine"),
                 custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
                 tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
                 infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
@@ -241,6 +280,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
                 class FakeFrame:
                     def __init__(self) -> None:
                         self.pad_index = 2
+                        self.source_id = 5
                         self.frame_num = 44
                         self.ntp_timestamp = datetime(2026, 6, 23, tzinfo=timezone.utc)
                         self.obj_meta_list = FakeNode(FakeObject())
@@ -254,7 +294,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
         builder._runtime_factory._pyds = FakePyds()
         builder._on_probe_buffer(None, FakeInfo(), {"probe_registry": registry, "meta_parser": parser})
 
-        self.assertEqual(captured["result"].stream_id, "stream-2")
+        self.assertEqual(captured["result"].stream_id, "stream-5")
         self.assertEqual(captured["result"].detections[0].class_name, "cat")
         self.assertEqual(captured["result"].tracks[0].track_id, 77)
         self.assertEqual(captured["result"].tracks[0].confidence, 0.66)
@@ -270,7 +310,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
             output=OutputSettings(enable_jsonl=True),
             optimization=OptimizationSettings(),
             deepstream=DeepStreamSettings(
-                model_engine_path=Path("models/yolov8n.engine"),
+                model_engine_path=Path("models/yolov8s.engine"),
                 custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
                 tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
                 infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
@@ -278,6 +318,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
             ),
         )
         builder = PipelineBuilder(settings)
+        builder._runtime_factory._pyds = None
 
         class FakeNode:
             def __init__(self, data, next_node=None) -> None:
@@ -314,6 +355,49 @@ class BuilderProbeDispatchTests(unittest.TestCase):
         builder._apply_osd_track_labels(FakeBatch())
 
         self.assertEqual(FakeObject.text_params.display_text, "person ID:42 0.90")
+
+    def test_probe_batch_meta_extract_logs_exceptions_with_rate_limit(self) -> None:
+        builder = PipelineBuilder(AppSettings())
+
+        class FakeInfo:
+            def get_buffer(self):
+                return object()
+
+        class FakePyds:
+            def gst_buffer_get_nvds_batch_meta(self, _):
+                raise RuntimeError("metadata unavailable")
+
+        builder._runtime_factory._pyds = FakePyds()
+
+        with self.assertLogs(level="WARNING") as logs:
+            for _ in range(5):
+                self.assertIsNone(builder._extract_nvds_batch_meta(FakeInfo()))
+
+        self.assertEqual(len(logs.output), 3)
+        self.assertIn("metadata unavailable", logs.output[0])
+        self.assertIn("count=3", logs.output[-1])
+
+    def test_probe_meta_cast_logs_exceptions_with_rate_limit(self) -> None:
+        builder = PipelineBuilder(AppSettings())
+
+        class FakeMeta:
+            @staticmethod
+            def cast(_):
+                raise RuntimeError("bad cast")
+
+        class FakePyds:
+            NvDsObjectMeta = FakeMeta
+
+        value = object()
+        builder._runtime_factory._pyds = FakePyds()
+
+        with self.assertLogs(level="WARNING") as logs:
+            for _ in range(5):
+                self.assertIs(builder._cast_meta(value, "NvDsObjectMeta"), value)
+
+        self.assertEqual(len(logs.output), 3)
+        self.assertIn("bad cast", logs.output[0])
+        self.assertIn("count=3", logs.output[-1])
 
 
 if __name__ == "__main__":

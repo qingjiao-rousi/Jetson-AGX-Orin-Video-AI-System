@@ -242,6 +242,7 @@ class DemoWebSettings:
     host: str = "127.0.0.1"
     port: int = 8080
     batch_dir: Path = Path("outputs/batch")
+    multifile_dir: Path = Path("outputs/multifile_inproc")
     enable_status_api: bool = True
     enable_debug_api: bool = True
     enable_logs_api: bool = True
@@ -252,13 +253,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--batch-dir", type=Path, default=Path("outputs/batch"))
+    parser.add_argument("--multifile-dir", type=Path, default=Path("outputs/multifile_inproc"))
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     debug_service = DemoDebugService()
-    settings = DemoWebSettings(host=args.host, port=args.port, batch_dir=args.batch_dir)
+    settings = DemoWebSettings(
+        host=args.host,
+        port=args.port,
+        batch_dir=args.batch_dir,
+        multifile_dir=args.multifile_dir,
+    )
     server = DashboardServer(debug_service, settings)
     server.start()
     print(f"Dashboard preview running at http://{args.host}:{args.port}")

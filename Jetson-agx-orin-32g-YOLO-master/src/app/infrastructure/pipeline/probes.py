@@ -20,10 +20,11 @@ class ProbeRegistry:
 
     frame_result_handler: Optional[FrameResultHandler] = None
     _events: list[str] = field(default_factory=list, init=False, repr=False)
+    _event_limit: int = field(default=100, init=False, repr=False)
 
     def register_frame_result_handler(self, handler: FrameResultHandler) -> None:
         self.frame_result_handler = handler
-        self._events.append("frame_result_handler_registered")
+        self._record_event("frame_result_handler_registered")
 
     def emit_frame_result(self, result: FrameResult) -> None:
         if self.frame_result_handler is None:
@@ -32,8 +33,13 @@ class ProbeRegistry:
 
     def emit_probe_payload(self, payload: object, parser) -> None:
         result = parser.parse(payload)
-        self._events.append("frame_result_emitted")
+        self._record_event("frame_result_emitted")
         self.emit_frame_result(result)
 
     def events(self) -> tuple[str, ...]:
         return tuple(self._events)
+
+    def _record_event(self, event: str) -> None:
+        self._events.append(event)
+        if len(self._events) > self._event_limit:
+            del self._events[: len(self._events) - self._event_limit]

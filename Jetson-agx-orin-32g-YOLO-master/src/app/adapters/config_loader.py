@@ -9,7 +9,15 @@ try:
 except ImportError as exc:  # pragma: no cover
     yaml = None
 
-from app.settings import AppSettings
+from app.settings import (
+    AppSettings,
+    DeepStreamSettings,
+    LoggingSettings,
+    OptimizationSettings,
+    OutputSettings,
+    SourceSettings,
+    WebSettings,
+)
 
 
 def load_settings(config_path: Path) -> AppSettings:
@@ -32,16 +40,6 @@ def load_settings(config_path: Path) -> AppSettings:
     web_cfg = raw.get("web", {})
     sources_cfg = raw.get("sources", [])
 
-    from app.settings import (
-        AppSettings,
-        DeepStreamSettings,
-        LoggingSettings,
-        OptimizationSettings,
-        OutputSettings,
-        SourceSettings,
-        WebSettings,
-    )
-
     sources = tuple(
         SourceSettings(
             name=item["name"],
@@ -62,6 +60,7 @@ def load_settings(config_path: Path) -> AppSettings:
             host=web_cfg.get("host", "127.0.0.1"),
             port=int(web_cfg.get("port", 8080)),
             batch_dir=Path(web_cfg.get("batch_dir", "outputs/batch")),
+            multifile_dir=Path(web_cfg.get("multifile_dir", "outputs/multifile_inproc")),
             enable_status_api=bool(web_cfg.get("enable_status_api", True)),
             enable_debug_api=bool(web_cfg.get("enable_debug_api", True)),
             enable_logs_api=bool(web_cfg.get("enable_logs_api", True)),
@@ -96,9 +95,14 @@ def load_settings(config_path: Path) -> AppSettings:
             inference_height=int(deepstream_cfg.get("inference_height", 640)),
             enable_tracker=bool(deepstream_cfg.get("enable_tracker", True)),
             enable_osd=bool(deepstream_cfg.get("enable_osd", True)),
+            enable_tiler=bool(deepstream_cfg.get("enable_tiler", False)),
+            tiler_rows=int(deepstream_cfg.get("tiler_rows", 2)),
+            tiler_columns=int(deepstream_cfg.get("tiler_columns", 4)),
+            tiler_width=int(deepstream_cfg.get("tiler_width", 1280)),
+            tiler_height=int(deepstream_cfg.get("tiler_height", 720)),
             output_sink=deepstream_cfg.get("output_sink", "rtmp"),
             output_video_path=Path(deepstream_cfg.get("output_video_path", "outputs/person_detect.mp4")),
-            model_engine_path=Path(deepstream_cfg.get("model_engine_path", "models/yolov8n.engine")),
+            model_engine_path=Path(deepstream_cfg.get("model_engine_path", "models/yolov8s.engine")),
             custom_lib_path=Path(
                 deepstream_cfg.get(
                     "custom_lib_path",

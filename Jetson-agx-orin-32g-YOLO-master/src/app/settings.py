@@ -11,6 +11,7 @@ class WebSettings:
     host: str = "127.0.0.1"
     port: int = 8080
     batch_dir: Path = Path("outputs/batch")
+    multifile_dir: Path = Path("outputs/multifile_inproc")
     enable_status_api: bool = True
     enable_debug_api: bool = True
     enable_logs_api: bool = True
@@ -61,9 +62,14 @@ class DeepStreamSettings:
     inference_height: int = 640
     enable_tracker: bool = True
     enable_osd: bool = True
+    enable_tiler: bool = False
+    tiler_rows: int = 2
+    tiler_columns: int = 4
+    tiler_width: int = 1280
+    tiler_height: int = 720
     output_sink: Literal["rtmp", "fake", "file"] = "rtmp"
     output_video_path: Path = Path("outputs/person_detect.mp4")
-    model_engine_path: Path = Path("models/yolov8n.engine")
+    model_engine_path: Path = Path("models/yolov8s.engine")
     custom_lib_path: Path = Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so")
     tracker_config_path: Path = Path("configs/deepstream/tracker_iou.yml")
     infer_config_path: Path = Path("configs/deepstream/infer_primary_yolo.txt")
@@ -96,6 +102,11 @@ class AppSettings:
             raise ValueError("deepstream.batch_size must be greater than zero")
         if self.deepstream.inference_width <= 0 or self.deepstream.inference_height <= 0:
             raise ValueError("deepstream inference size must be greater than zero")
+        if self.deepstream.enable_tiler:
+            if self.deepstream.tiler_rows <= 0 or self.deepstream.tiler_columns <= 0:
+                raise ValueError("deepstream tiler rows/columns must be greater than zero")
+            if self.deepstream.tiler_width <= 0 or self.deepstream.tiler_height <= 0:
+                raise ValueError("deepstream tiler size must be greater than zero")
         if self.web.port <= 0:
             raise ValueError("web.port must be greater than zero")
         if self.web.refresh_interval_ms <= 0:

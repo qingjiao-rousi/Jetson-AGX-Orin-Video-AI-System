@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.domain.entities import BoundingBox, Detection, FrameResult, Track
@@ -13,14 +13,11 @@ class MetaParser:
         frame_payload = batch_payload or payload
         detections = self._parse_detections(frame_payload)
         tracks = self._parse_tracks(frame_payload)
+        timestamp = self._parse_frame_timestamp(frame_payload)
         return FrameResult(
             stream_id=self._parse_stream_id(frame_payload),
             frame_id=self._parse_frame_id(frame_payload),
-            timestamp=self._parse_timestamp(
-                frame_payload.get("timestamp")
-                or frame_payload.get("ntp_timestamp")
-                or frame_payload.get("buf_pts")
-            ),
+            timestamp=timestamp,
             detections=detections,
             tracks=tracks,
             extra=dict(payload.get("extra", {})),
@@ -35,10 +32,69 @@ class MetaParser:
             return dict(vars(raw_meta))
         return {"raw": raw_meta}
 
-    def _parse_timestamp(self, value: object) -> datetime:
-        if isinstance(value, datetime):
-            return value
+    def _parse_frame_timestamp(self, payload: dict[str, Any]) -> datetime:
+        if "timestamp" in payload and payload.get("timestamp") not in (None, ""):
+            return self._parse_timestamp(payload.get("timestamp"), numeric_mode="auto")
+        if "ntp_timestamp" in payload and payload.get("ntp_timestamp") not in (None, "", 0):
+            return self._parse_timestamp(payload.get("ntp_timestamp"), numeric_mode="epoch")
+        if "buf_pts" in payload and payload.get("buf_pts") not in (None, ""):
+            return self._parse_timestamp(payload.get("buf_pts"), numeric_mode="relative_ns")
         return datetime.now(tz=timezone.utc)
+
+    def _parse_timestamp(self, value: object, *, numeric_mode: str = "auto") -> datetime:
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        if isinstance(value, str):
+            parsed = self._parse_timestamp_text(value)
+            if parsed is not None:
+                return parsed
+            return datetime.now(tz=timezone.utc)
+        if isinstance(value, (int, float)):
+            return self._parse_numeric_timestamp(value, numeric_mode=numeric_mode)
+        return datetime.now(tz=timezone.utc)
+
+    def _parse_timestamp_text(self, value: str) -> datetime | None:
+        text = value.strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _parse_numeric_timestamp(self, value: int | float, *, numeric_mode: str) -> datetime:
+        numeric = float(value)
+        if numeric < 0:
+            return datetime.now(tz=timezone.utc)
+
+        if numeric_mode == "relative_ns":
+            return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=numeric / 1_000_000_000)
+
+        if numeric_mode == "epoch":
+            return self._datetime_from_epoch_number(numeric)
+
+        return self._datetime_from_epoch_number(numeric)
+
+    def _datetime_from_epoch_number(self, value: float) -> datetime:
+        if value >= 1e17:
+            seconds = value / 1_000_000_000
+        elif value >= 1e14:
+            seconds = value / 1_000_000
+        elif value >= 1e11:
+            seconds = value / 1_000
+        else:
+            seconds = value
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return datetime.now(tz=timezone.utc)
 
     def _parse_stream_id(self, payload: dict[str, Any]) -> str:
         if "stream_id" in payload:

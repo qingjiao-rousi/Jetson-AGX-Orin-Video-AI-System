@@ -48,6 +48,18 @@ const els = {
   batchTableBody: document.getElementById("batch-table-body"),
   batchVideo: document.getElementById("batch-video"),
   batchDetail: document.getElementById("batch-detail"),
+  multifileNote: document.getElementById("multifile-note"),
+  multifileArtifacts: document.getElementById("multifile-artifacts"),
+  multifileStatus: document.getElementById("multifile-status"),
+  multifileStreams: document.getElementById("multifile-streams"),
+  multifileFrames: document.getElementById("multifile-frames"),
+  multifileDetections: document.getElementById("multifile-detections"),
+  multifilePersons: document.getElementById("multifile-persons"),
+  multifileReview: document.getElementById("multifile-review"),
+  multifileFailed: document.getElementById("multifile-failed"),
+  multifileTableBody: document.getElementById("multifile-table-body"),
+  multifileVideo: document.getElementById("multifile-video"),
+  multifileDetail: document.getElementById("multifile-detail"),
 };
 
 if (els.batchVideo) {
@@ -749,6 +761,104 @@ function renderAcceptanceConclusion(summary, quality) {
   els.acceptanceDetail.textContent = `${passed}/${total} 个视频 passed，总耗时 ${formatDuration(summary.total_duration_seconds)}，并发数 ${summary.batch_jobs ?? "-"}`;
 }
 
+function renderMultifileDashboard(payload) {
+  const summary = payload.summary || {};
+  const quality = payload.quality || {};
+  const artifacts = payload.artifacts || {};
+  const streams = summary.streams || {};
+  const streamQuality = {};
+  (quality.streams || []).forEach((item) => {
+    streamQuality[item.stream_id] = item;
+  });
+
+  els.multifileNote.textContent = payload.multifile_dir
+    ? `单 Pipeline 目录: ${payload.multifile_dir}`
+    : "尚未生成单 Pipeline 结果";
+  els.multifileStatus.textContent = quality.quality_status || "unknown";
+  els.multifileStatus.className = `status ${qualityClass(quality.quality_status || "unknown")}`;
+  els.multifileStreams.textContent = `${summary.observed_stream_count ?? 0}/${summary.expected_stream_count ?? 0}`;
+  els.multifileFrames.textContent = String(summary.total_frame_count ?? 0);
+  els.multifileDetections.textContent = String(summary.total_detections ?? 0);
+  els.multifilePersons.textContent = String(summary.total_unique_persons ?? 0);
+  els.multifileReview.textContent = String(quality.review_stream_count ?? 0);
+  els.multifileFailed.textContent = String(quality.failed_stream_count ?? 0);
+  renderMultifileArtifacts(artifacts);
+  renderMultifileTable(streams, streamQuality);
+  renderMultifileDetail(payload);
+
+  if (artifacts.tiled_video) {
+    if (els.multifileVideo.getAttribute("src") !== artifacts.tiled_video) {
+      els.multifileVideo.setAttribute("src", artifacts.tiled_video);
+      els.multifileVideo.load();
+    }
+  } else {
+    els.multifileVideo.removeAttribute("src");
+  }
+}
+
+function renderMultifileArtifacts(artifacts) {
+  const links = [
+    ["tiled MP4", artifacts.tiled_video],
+    ["summary", artifacts.summary],
+    ["quality", artifacts.quality],
+    ["jsonl", artifacts.jsonl],
+    ["run.log", artifacts.run_log],
+  ]
+    .filter(([, url]) => Boolean(url))
+    .map(([label, url]) => `<a class="btn" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`)
+    .join("");
+  els.multifileArtifacts.innerHTML = links || '<span class="empty-state">暂无单 Pipeline 输出链接</span>';
+}
+
+function renderMultifileTable(streams, streamQuality) {
+  const entries = Object.entries(streams || {}).sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) {
+    els.multifileTableBody.innerHTML = '<tr><td colspan="9">单 Pipeline 结果未就绪</td></tr>';
+    return;
+  }
+  els.multifileTableBody.innerHTML = entries
+    .map(([streamId, stream]) => {
+      const quality = streamQuality[streamId] || {};
+      const messages = [...(quality.failures || []), ...(quality.reviews || [])].join("; ");
+      return `
+        <tr>
+          <td>${escapeHtml(streamId)}</td>
+          <td><span class="status ${qualityClass(quality.quality_status || "unknown")}">${escapeHtml(quality.quality_status || "unknown")}</span></td>
+          <td>${escapeHtml(stream.frame_count ?? 0)}</td>
+          <td>${escapeHtml(stream.total_detections ?? 0)}</td>
+          <td>${escapeHtml(stream.total_track_observations ?? 0)}</td>
+          <td>${escapeHtml(stream.total_unique_persons ?? 0)}</td>
+          <td>${escapeHtml(formatFps(stream.estimated_fps))}</td>
+          <td>${escapeHtml(formatBool(stream.is_frame_continuous))}</td>
+          <td title="${escapeHtml(messages)}">${escapeHtml(messages || "-")}</td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+function renderMultifileDetail(payload) {
+  const quality = payload.quality || {};
+  const summary = payload.summary || {};
+  const logTail = payload.log_tail || "";
+  const messages = [...(quality.failures || []), ...(quality.reviews || [])];
+  els.multifileDetail.innerHTML = `
+    <section class="batch-detail-section">
+      <h3>单 Pipeline 验收</h3>
+      <div class="batch-detail-grid">
+        <div class="batch-detail-row"><span>模式</span><strong>${escapeHtml(summary.mode || "inprocess_multifile")}</strong></div>
+        <div class="batch-detail-row"><span>质量状态</span><strong>${escapeHtml(quality.quality_status || "unknown")}</strong></div>
+        <div class="batch-detail-row"><span>缺失路数</span><strong>${escapeHtml((summary.missing_stream_ids || []).join(", ") || "无")}</strong></div>
+        <div class="batch-detail-row"><span>原因</span><strong>${escapeHtml(messages.join("; ") || "无")}</strong></div>
+      </div>
+    </section>
+    <section class="batch-detail-section wide">
+      <h3>run.log 摘要</h3>
+      <pre class="log-preview">${escapeHtml(logTail || "暂无 run.log 摘要")}</pre>
+    </section>
+  `;
+}
+
 // 添加本地事件
 function addLocalEvent(text) {
   const timestamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -802,6 +912,21 @@ async function refreshBatchDashboard() {
     console.warn("加载批量结果失败:", error);
     els.batchTableBody.innerHTML = `<tr><td colspan="11">批量结果未就绪：${escapeHtml(error.message)}</td></tr>`;
     els.batchDetail.innerHTML = '<div class="empty-state">先运行批量处理，生成 outputs/batch/batch_summary.json 和 batch_quality.json。</div>';
+  }
+}
+
+async function refreshMultifileDashboard() {
+  try {
+    const response = await fetch("/api/multifile/dashboard");
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const payload = await response.json();
+    renderMultifileDashboard(payload);
+  } catch (error) {
+    console.warn("加载单 Pipeline 结果失败:", error);
+    els.multifileTableBody.innerHTML = `<tr><td colspan="9">单 Pipeline 结果未就绪：${escapeHtml(error.message)}</td></tr>`;
+    els.multifileDetail.innerHTML = '<div class="empty-state">先运行 scripts/run_multifile_inproc.sh，生成 multifile_summary.json 和 multifile_quality.json。</div>';
   }
 }
 
@@ -870,6 +995,8 @@ document.getElementById("mark-alert-read").addEventListener("click", () => {
 
 // 初始化：立即刷新一次，然后每秒自动刷新
 refresh();
+refreshMultifileDashboard();
 refreshBatchDashboard();
 window.setInterval(refresh, 10000);
+window.setInterval(refreshMultifileDashboard, 5000);
 window.setInterval(refreshBatchDashboard, 5000);

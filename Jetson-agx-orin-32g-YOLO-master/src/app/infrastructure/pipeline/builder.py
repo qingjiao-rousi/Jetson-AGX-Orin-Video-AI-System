@@ -90,7 +90,8 @@ class GStreamerRuntimeFactory:
             Gst.init(None)
             self._gst = Gst
             self._available = True
-        except Exception:
+        except Exception as exc:
+            logging.warning("GStreamer runtime unavailable: %s", exc)
             self._gst = None
             self._available = False
 
@@ -99,7 +100,8 @@ class GStreamerRuntimeFactory:
             import pyds  # type: ignore
 
             self._pyds = pyds
-        except Exception:
+        except Exception as exc:
+            logging.warning("DeepStream pyds bindings unavailable: %s", exc)
             self._pyds = None
 
     def _set_property_if_available(self, element: Any, key: str, value: Any) -> None:
@@ -117,6 +119,7 @@ class PipelineBuilder:
     def __init__(self, settings) -> None:
         self.settings = settings
         self._runtime_factory = GStreamerRuntimeFactory()
+        self._probe_warning_counts: dict[str, int] = {}
 
     def build(self) -> PipelineBlueprint:
         self.settings.validate()
@@ -192,6 +195,7 @@ class PipelineBuilder:
         output_sink = getattr(ds, "output_sink", "rtmp")
         use_fake_sink = output_sink == "fake"
         use_file_sink = output_sink == "file"
+        tiler_enabled = bool(getattr(ds, "enable_tiler", False)) and len(branches) > 1
         live_source = any(branch.source.is_rtsp for branch in branches)
         nodes: list[PipelineNodeSpec] = [
             PipelineNodeSpec(
@@ -267,6 +271,24 @@ class PipelineBuilder:
                     {"required": True, "live": True, "supports_probe": True, "hardware_accelerated": True},
                 ),
             ]
+
+        if tiler_enabled:
+            insert_at = 4 if tracker_enabled else 3
+            nodes.insert(
+                insert_at,
+                PipelineNodeSpec(
+                    "tiler",
+                    "nvmultistreamtiler",
+                    "compose",
+                    {
+                        "rows": ds.tiler_rows,
+                        "columns": ds.tiler_columns,
+                        "width": ds.tiler_width,
+                        "height": ds.tiler_height,
+                    },
+                    {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": True},
+                ),
+            )
 
         if not use_fake_sink:
             nodes[5:5] = [
@@ -348,6 +370,9 @@ class PipelineBuilder:
         if self.settings.deepstream.enable_tracker:
             links.append((current, "tracker"))
             current = "tracker"
+        if bool(getattr(self.settings.deepstream, "enable_tiler", False)) and len(branches) > 1:
+            links.append((current, "tiler"))
+            current = "tiler"
         if getattr(self.settings.deepstream, "enable_osd", True):
             links.extend(
                 [
@@ -374,6 +399,12 @@ class PipelineBuilder:
         return tuple(links)
 
     def _build_probes(self) -> tuple[tuple[str, str], ...]:
+        if (
+            getattr(self.settings.deepstream, "enable_osd", True)
+            and bool(getattr(self.settings.deepstream, "enable_tiler", False))
+            and self.settings.effective_source_count() > 1
+        ):
+            return (("tiler", "sink"),)
         if getattr(self.settings.deepstream, "enable_osd", True):
             probes = [("osd", "sink")]
         else:
@@ -397,6 +428,7 @@ class PipelineBuilder:
             "enable_encoder": output_sink != "fake",
             "enable_rtmp_sink": output_sink == "rtmp",
             "enable_file_sink": output_sink == "file",
+            "enable_tiler": bool(getattr(self.settings.deepstream, "enable_tiler", False)),
             "enable_json_output": self.settings.output.enable_jsonl,
             "enable_mqtt_output": self.settings.output.enable_mqtt,
             "enable_kafka_output": self.settings.output.enable_kafka,
@@ -513,6 +545,7 @@ class PipelineBuilder:
             "live_source": blueprint.timestamp_policy.get("live_source", True),
             "sync_enabled": blueprint.timestamp_policy.get("sync_enabled", True),
             "enable_rtmp_sink": blueprint.output_policy.get("enable_rtmp_sink", True),
+            "enable_tiler": blueprint.output_policy.get("enable_tiler", False),
             "output_sink": getattr(self.settings.deepstream, "output_sink", "rtmp"),
             "enable_json_output": blueprint.output_policy.get("enable_json_output", True),
         }
@@ -712,7 +745,12 @@ class PipelineBuilder:
 
         try:
             batch_meta = self._runtime_factory.pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
-        except Exception:
+        except Exception as exc:
+            self._log_probe_warning(
+                "extract_nvds_batch_meta",
+                "failed to extract NvDsBatchMeta from probe buffer: %s",
+                exc,
+            )
             return None
         return batch_meta
 
@@ -729,13 +767,17 @@ class PipelineBuilder:
         return payload
 
     def _frame_meta_to_payload(self, frame_meta: object) -> dict[str, Any]:
+        source_id = self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0))
+        ntp_timestamp = self._safe_get(frame_meta, "ntp_timestamp", None)
+        buf_pts = self._safe_get(frame_meta, "buf_pts", None)
         frame: dict[str, Any] = {
-            "stream_id": self._safe_get(frame_meta, "pad_index", 0),
-            "source_id": self._safe_get(frame_meta, "pad_index", 0),
+            "stream_id": source_id,
+            "source_id": source_id,
             "frame_id": self._safe_get(frame_meta, "frame_num", 0),
             "frame_num": self._safe_get(frame_meta, "frame_num", 0),
-            "timestamp": self._safe_get(frame_meta, "ntp_timestamp", None),
-            "ntp_timestamp": self._safe_get(frame_meta, "ntp_timestamp", None),
+            "timestamp": ntp_timestamp,
+            "ntp_timestamp": ntp_timestamp,
+            "buf_pts": buf_pts,
             "obj_meta_list": [],
             "tracks": [],
         }
@@ -809,9 +851,21 @@ class PipelineBuilder:
         if cls is not None and hasattr(cls, "cast"):
             try:
                 return cls.cast(value)
-            except Exception:
+            except Exception as exc:
+                self._log_probe_warning(
+                    f"cast_meta_{meta_type}",
+                    "failed to cast DeepStream %s metadata: %s",
+                    meta_type,
+                    exc,
+                )
                 return value
         return value
+
+    def _log_probe_warning(self, key: str, message: str, *args: Any) -> None:
+        count = self._probe_warning_counts.get(key, 0) + 1
+        self._probe_warning_counts[key] = count
+        if count <= 3 or count % 100 == 0:
+            logging.warning("%s (count=%s)", message % args, count)
 
     def _safe_get(self, obj: object, attr: str, default: Any) -> Any:
         if obj is None:

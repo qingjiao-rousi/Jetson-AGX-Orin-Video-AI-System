@@ -6,7 +6,7 @@ import mimetypes
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Thread
+from threading import Thread, current_thread
 from urllib.parse import parse_qs, unquote, urlparse
 
 
@@ -30,8 +30,16 @@ class DashboardApi:
             return self._batch_json("batch_quality.json")
         if path == "/api/batch/dashboard":
             return self._batch_dashboard()
+        if path == "/api/multifile/summary":
+            return self._multifile_json("multifile_summary.json")
+        if path == "/api/multifile/quality":
+            return self._multifile_json("multifile_quality.json")
+        if path == "/api/multifile/dashboard":
+            return self._multifile_dashboard()
         if path.startswith("/batch-files/"):
             return self._batch_file(path.removeprefix("/batch-files/"))
+        if path.startswith("/multifile-files/"):
+            return self._multifile_file(path.removeprefix("/multifile-files/"))
         if path in {"/", "/index.html"}:
             return self._static("index.html", "text/html; charset=utf-8")
         if path == "/app.js":
@@ -39,18 +47,24 @@ class DashboardApi:
         return self._json({"error": "not_found", "path": path}, status=HTTPStatus.NOT_FOUND)
 
     def batch_file_response(self, raw_relative_path: str, range_header: str | None = None) -> tuple[int, str, bytes, dict[str, str]]:
+        return self._rooted_file_response(self._batch_dir(), raw_relative_path, range_header)
+
+    def multifile_file_response(self, raw_relative_path: str, range_header: str | None = None) -> tuple[int, str, bytes, dict[str, str]]:
+        return self._rooted_file_response(self._multifile_dir(), raw_relative_path, range_header)
+
+    def _rooted_file_response(self, root_dir: Path, raw_relative_path: str, range_header: str | None = None) -> tuple[int, str, bytes, dict[str, str]]:
         relative_path = Path(unquote(raw_relative_path))
         if relative_path.is_absolute() or ".." in relative_path.parts:
-            status, content_type, body = self._json({"error": "invalid_batch_file_path"}, status=HTTPStatus.BAD_REQUEST)
+            status, content_type, body = self._json({"error": "invalid_file_path"}, status=HTTPStatus.BAD_REQUEST)
             return status, content_type, body, {}
-        path = (self._batch_dir() / relative_path).resolve()
-        batch_dir = self._batch_dir().resolve()
-        if batch_dir not in path.parents and path != batch_dir:
-            status, content_type, body = self._json({"error": "batch_file_outside_root"}, status=HTTPStatus.BAD_REQUEST)
+        path = (root_dir / relative_path).resolve()
+        root = root_dir.resolve()
+        if root not in path.parents and path != root:
+            status, content_type, body = self._json({"error": "file_outside_root"}, status=HTTPStatus.BAD_REQUEST)
             return status, content_type, body, {}
         if not path.is_file():
             status, content_type, body = self._json(
-                {"error": "batch_file_missing", "file": str(relative_path)},
+                {"error": "file_missing", "file": str(relative_path), "root_dir": str(root_dir)},
                 status=HTTPStatus.NOT_FOUND,
             )
             return status, content_type, body, {}
@@ -93,6 +107,18 @@ class DashboardApi:
         }
         return self._json(payload)
 
+    def _multifile_dashboard(self) -> tuple[int, str, bytes]:
+        summary = self._read_multifile_json("multifile_summary.json")
+        quality = self._read_multifile_json("multifile_quality.json")
+        payload = {
+            "multifile_dir": str(self._multifile_dir()),
+            "summary": summary,
+            "quality": quality,
+            "artifacts": self._multifile_artifacts(),
+            "log_tail": self._read_text_tail(self._multifile_dir() / "run.log", max_lines=80),
+        }
+        return self._json(payload)
+
     def _batch_json(self, name: str) -> tuple[int, str, bytes]:
         path = self._batch_dir() / name
         if not path.exists():
@@ -102,8 +128,21 @@ class DashboardApi:
             )
         return HTTPStatus.OK, "application/json; charset=utf-8", path.read_bytes()
 
+    def _multifile_json(self, name: str) -> tuple[int, str, bytes]:
+        path = self._multifile_dir() / name
+        if not path.exists():
+            return self._json(
+                {"error": "multifile_file_missing", "file": name, "multifile_dir": str(self._multifile_dir())},
+                status=HTTPStatus.NOT_FOUND,
+            )
+        return HTTPStatus.OK, "application/json; charset=utf-8", path.read_bytes()
+
     def _batch_file(self, raw_relative_path: str) -> tuple[int, str, bytes]:
         status, content_type, body, _headers = self.batch_file_response(raw_relative_path)
+        return status, content_type, body
+
+    def _multifile_file(self, raw_relative_path: str) -> tuple[int, str, bytes]:
+        status, content_type, body, _headers = self.multifile_file_response(raw_relative_path)
         return status, content_type, body
 
     def _parse_range_header(self, range_header: str | None, size: int) -> tuple[int, int] | None:
@@ -132,8 +171,17 @@ class DashboardApi:
     def _batch_dir(self) -> Path:
         return Path(getattr(self._web_settings, "batch_dir", Path("outputs/batch")))
 
+    def _multifile_dir(self) -> Path:
+        return Path(getattr(self._web_settings, "multifile_dir", Path("outputs/multifile_inproc")))
+
     def _read_batch_json(self, name: str) -> dict:
         path = self._batch_dir() / name
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _read_multifile_json(self, name: str) -> dict:
+        path = self._multifile_dir() / name
         if not path.exists():
             return {}
         return json.loads(path.read_text(encoding="utf-8"))
@@ -173,6 +221,20 @@ class DashboardApi:
                 artifacts[key] = self._batch_url_for_path(str(path))
         return artifacts
 
+    def _multifile_artifacts(self) -> dict[str, str]:
+        artifacts: dict[str, str] = {}
+        for key, name in {
+            "summary": "multifile_summary.json",
+            "quality": "multifile_quality.json",
+            "tiled_video": "multifile_preview.mp4",
+            "jsonl": "results.jsonl",
+            "run_log": "run.log",
+        }.items():
+            path = self._multifile_dir() / name
+            if path.is_file():
+                artifacts[key] = self._multifile_url_for_path(str(path))
+        return artifacts
+
     def _batch_url_for_path(self, raw_path: str) -> str:
         path = Path(raw_path)
         if not path.is_absolute():
@@ -182,6 +244,16 @@ class DashboardApi:
         except ValueError:
             return ""
         return "/batch-files/" + relative.as_posix()
+
+    def _multifile_url_for_path(self, raw_path: str) -> str:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        try:
+            relative = path.resolve().relative_to(self._multifile_dir().resolve())
+        except ValueError:
+            return ""
+        return "/multifile-files/" + relative.as_posix()
 
     def _read_text_tail(self, path: Path, max_lines: int = 80) -> str:
         if not path.is_absolute():
@@ -228,6 +300,11 @@ class DashboardServer:
                         parsed.path.removeprefix("/batch-files/"),
                         self.headers.get("Range"),
                     )
+                elif parsed.path.startswith("/multifile-files/"):
+                    status, content_type, body, extra_headers = api.multifile_file_response(
+                        parsed.path.removeprefix("/multifile-files/"),
+                        self.headers.get("Range"),
+                    )
                 else:
                     status, content_type, body = api.route(parsed.path, parse_qs(parsed.query))
                 self.send_response(status)
@@ -250,8 +327,12 @@ class DashboardServer:
     def stop(self) -> None:
         if self._httpd is None:
             return
-        self._httpd.shutdown()
-        self._httpd.server_close()
+        httpd = self._httpd
+        thread = self._thread
+        httpd.shutdown()
+        httpd.server_close()
+        if thread is not None and thread is not current_thread() and thread.is_alive():
+            thread.join(timeout=2.0)
         self._httpd = None
         self._thread = None
         logging.info("dashboard stopped")

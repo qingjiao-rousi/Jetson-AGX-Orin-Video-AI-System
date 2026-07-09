@@ -72,28 +72,10 @@ scripts/check_person_output.sh
 输出验收脚本。
 
 ```text
-scripts/smoke_test_person_detect.sh
-```
-
-一键烟测脚本。
-
-```text
-scripts/smoke_test_person_tracker.sh
-```
-
-一键 tracker 烟测脚本，检查 JSONL 中是否存在稳定 `track_id`。
-
-```text
 scripts/summarize_person_tracks.py
 ```
 
 离线统计脚本，读取 tracker JSONL 并生成 `summary.json`。
-
-```text
-scripts/smoke_test_person_counting.sh
-```
-
-一键计数烟测脚本，串联检测、跟踪、统计。
 
 ```text
 scripts/summarize_person_roi.py
@@ -102,22 +84,10 @@ scripts/summarize_person_roi.py
 离线 ROI 统计脚本，使用 `track_id + bbox 中心点` 判断人员是否在区域内。
 
 ```text
-scripts/smoke_test_person_roi.sh
-```
-
-一键 ROI 烟测脚本，串联检测、跟踪、ROI 统计。
-
-```text
 scripts/summarize_person_line.py
 ```
 
 离线越线计数脚本，使用 `track_id + bbox 中心点轨迹` 判断是否穿过一条线。
-
-```text
-scripts/smoke_test_person_line.sh
-```
-
-一键越线计数烟测脚本。
 
 ```text
 configs/analytics/person_analytics.yaml
@@ -138,22 +108,10 @@ scripts/draw_person_analytics.py
 可视化叠加脚本，把 ROI 矩形和计数线画到输出视频上。
 
 ```text
-scripts/smoke_test_person_analytics.sh
-```
-
-一键 analytics 烟测脚本，串联检测、跟踪、统一统计和可视化叠加。
-
-```text
 scripts/summarize_person_timeline.py
 ```
 
 离线时间轴与同步基准脚本，检查 `stream_id/frame_id/timestamp` 的连续性、单调性和估算 FPS。
-
-```text
-scripts/smoke_test_person_timeline.sh
-```
-
-一键 timeline 烟测脚本。
 
 ## 3. 环境要求
 
@@ -381,50 +339,32 @@ ENABLE_WEB=1 scripts/run_person_detect.sh /home/nvidia/Desktop/YOLO/video/1.mp4
 http://127.0.0.1:8080
 ```
 
-## 6. 一键烟测
+## 6. 统一验收入口
 
-推荐每次修改代码后运行烟测：
+早期分阶段 `smoke_test_person_*.sh` 脚本已经删除，当前推荐统一使用最终验收入口：
 
 ```bash
 cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
 
-scripts/smoke_test_person_detect.sh
+scripts/run_acceptance_ui.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/acceptance_latest
 ```
 
-默认测试视频：
-
-```text
-/home/nvidia/Desktop/YOLO/video/1.mp4
-```
-
-指定测试视频：
+如果只验收单个视频：
 
 ```bash
-scripts/smoke_test_person_detect.sh /home/nvidia/Desktop/YOLO/video/2.mp4
+scripts/run_person_analytics.sh \
+  /home/nvidia/Desktop/YOLO/video/1.mp4 \
+  outputs/final
 ```
 
-烟测输出默认写到：
+如果验收单进程单 pipeline 多路合批：
 
-```text
-outputs/smoke/person_detect.mp4
-outputs/smoke/results.jsonl
-```
-
-烟测会自动执行：
-
-1. 运行 person 检测。
-2. 检查 MP4 是否存在且可被 GStreamer 识别。
-3. 检查分辨率是否符合预期。
-4. 检查 JSONL 是否非空。
-5. 检查 JSONL 是否只包含 `person`。
-6. 检查 bbox 是否非空。
-7. 检查 confidence 是否在 `0..1` 合理范围。
-
-看到下面结果说明最小闭环正常：
-
-```text
-Failures: 0
-Smoke test passed.
+```bash
+scripts/run_multifile_inproc.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/multifile_inproc
 ```
 
 ## 7. 手动验收命令
@@ -513,18 +453,6 @@ JSONL 中会出现：
 ]
 ```
 
-运行 tracker 烟测：
-
-```bash
-scripts/smoke_test_person_tracker.sh
-```
-
-指定视频：
-
-```bash
-scripts/smoke_test_person_tracker.sh /home/nvidia/Desktop/YOLO/video/2.mp4
-```
-
 手动检查 tracker 输出：
 
 ```bash
@@ -605,33 +533,6 @@ python3 scripts/summarize_person_tracks.py \
   --min-track-frames 5
 ```
 
-一键计数烟测：
-
-```bash
-scripts/smoke_test_person_counting.sh
-```
-
-指定视频：
-
-```bash
-scripts/smoke_test_person_counting.sh /home/nvidia/Desktop/YOLO/video/2.mp4
-```
-
-默认输出：
-
-```text
-outputs/smoke/person_counting.mp4
-outputs/smoke/counting_results.jsonl
-outputs/smoke/summary.json
-```
-
-验收通过时会看到：
-
-```text
-[OK] Counting summary is valid
-Counting smoke test passed.
-```
-
 ## 10. ROI 区域人数统计
 
 ROI 统计基于 tracker JSONL 中的 `tracks`，用每个 track 的 bbox 中心点判断是否落入矩形区域。
@@ -667,26 +568,6 @@ python3 scripts/summarize_person_roi.py \
   outputs/smoke/roi_left.json \
   --roi 0,0,640,720 \
   --roi-id left-half
-```
-
-一键 ROI 烟测：
-
-```bash
-scripts/smoke_test_person_roi.sh
-```
-
-指定 ROI：
-
-```bash
-ROI=0,0,640,720 ROI_ID=left-half scripts/smoke_test_person_roi.sh
-```
-
-默认输出：
-
-```text
-outputs/smoke/person_roi.mp4
-outputs/smoke/roi_results.jsonl
-outputs/smoke/roi_summary.json
 ```
 
 ROI summary 示例：
@@ -776,26 +657,6 @@ python3 scripts/summarize_person_line.py \
   --line-id middle-vertical
 ```
 
-一键越线烟测：
-
-```bash
-scripts/smoke_test_person_line.sh
-```
-
-指定计数线：
-
-```bash
-LINE=640,0,640,720 LINE_ID=middle-vertical scripts/smoke_test_person_line.sh
-```
-
-默认输出：
-
-```text
-outputs/smoke/person_line.mp4
-outputs/smoke/line_results.jsonl
-outputs/smoke/line_summary.json
-```
-
 输出示例：
 
 ```json
@@ -827,11 +688,7 @@ python3 scripts/summarize_person_line.py \
   --no-count-once-per-track
 ```
 
-可以通过 `MIN_SIDE_DISTANCE` 或 `--min-side-distance` 忽略贴近线附近的小抖动：
-
-```bash
-MIN_SIDE_DISTANCE=8 scripts/smoke_test_person_line.sh
-```
+可以通过 `--min-side-distance` 忽略贴近线附近的小抖动。
 
 ## 12. 统一 Analytics 配置与可视化
 
@@ -882,12 +739,6 @@ python3 scripts/draw_person_analytics.py \
   outputs/smoke/person_analytics_overlay.mp4
 ```
 
-一键 analytics 烟测：
-
-```bash
-scripts/smoke_test_person_analytics.sh
-```
-
 正式运行入口：
 
 ```bash
@@ -935,12 +786,6 @@ person ID:5 0.86
 python3 scripts/summarize_person_timeline.py \
   outputs/smoke/tracker_results.jsonl \
   outputs/smoke/timeline_summary.json
-```
-
-一键 smoke test：
-
-```bash
-scripts/smoke_test_person_timeline.sh
 ```
 
 输出示例：
@@ -1055,6 +900,136 @@ BATCH_JOBS=1 -> 串行基准
 BATCH_JOBS=4 -> 常用稳定并发点
 BATCH_JOBS=8 -> 当前落地默认策略
 ```
+
+### 14.1 单进程多路合批实验入口
+
+当前已经新增一个单进程多路实验入口，用于验证：
+
+```text
+8 个本地 MP4
+-> 1 个 Python/DeepStream 进程
+-> 1 个 nvstreammux batch-size=8
+-> nvinfer batch 推理
+-> tracker / osd probe
+-> nvmultistreamtiler 2x4 拼接
+-> 1 个 tiled MP4 + 1 个合并 JSONL
+```
+
+运行：
+
+```bash
+cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
+source scripts/env.sh
+
+scripts/run_multifile_inproc.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/multifile_inproc
+```
+
+默认输出：
+
+```text
+outputs/multifile_inproc/results.jsonl
+outputs/multifile_inproc/multifile_preview.mp4
+outputs/multifile_inproc/multifile_summary.json
+outputs/multifile_inproc/multifile_quality.json
+outputs/multifile_inproc/run.log
+outputs/multifile_inproc/.runtime/app_multifile_runtime.yaml
+```
+
+该入口默认使用：
+
+```text
+OUTPUT_SINK=file
+ENABLE_TILER=1
+TILER_ROWS=2
+TILER_COLUMNS=4
+TILER_WIDTH=1280
+TILER_HEIGHT=720
+```
+
+也就是说当前单 pipeline 会输出一个 2x4 拼接预览视频，同时输出合并 JSONL。JSONL 中会通过 `stream_id/source_id` 区分每一路输入。
+
+运行脚本结束后会自动生成：
+
+- `multifile_summary.json`：按 `stream_id` 汇总帧数、检测数、track 观测、去重人数、时间轴 FPS 和帧连续性。
+- `multifile_quality.json`：检查 tiled MP4、JSONL、run.log 是否存在，8 路 stream 是否齐全，并标记 passed/review/failed。
+
+本地 UI 已增加“单 Pipeline 结果看板”，会展示：
+
+- `multifile_preview.mp4` tiled 视频。
+- 8 路 stream 统计表。
+- 单 pipeline 质量状态。
+- summary / quality / JSONL / run.log 快捷入口。
+
+如果单独启动 UI 预览已有结果：
+
+```bash
+python3 scripts/preview_web.py \
+  --host 127.0.0.1 \
+  --port 8090 \
+  --batch-dir outputs/acceptance_latest \
+  --multifile-dir outputs/multifile_inproc
+```
+
+如果只想先测 4 路：
+
+```bash
+SOURCE_COUNT=4 scripts/run_multifile_inproc.sh \
+  /home/nvidia/Desktop/YOLO/video \
+  outputs/multifile_4
+```
+
+如果单进程多路 tiled MP4 和 JSONL 跑通，下一步再选择是否需要分路输出：
+
+- 保持合成一路预览：继续使用 `nvmultistreamtiler`，适合 UI 总览和验收演示。
+- 每路单独输出：在推理/OSD 后增加 `nvstreamdemux`，每路接独立 encoder/sink。
+
+### 14.2 用本地 MP4 模拟 RTSP 拉流
+
+如果当前没有真实 RTSP 摄像头，可以先用本地 MP4 启动一个本地 RTSP 模拟器：
+
+```bash
+cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
+source scripts/env.sh
+
+python3 scripts/serve_mp4_as_rtsp.py \
+  /home/nvidia/Desktop/YOLO/video \
+  --limit 8 \
+  --port 8554
+```
+
+它会暴露：
+
+```text
+rtsp://127.0.0.1:8554/stream1
+rtsp://127.0.0.1:8554/stream2
+...
+rtsp://127.0.0.1:8554/stream8
+```
+
+然后在另一个终端运行单进程 RTSP 拉流入口：
+
+```bash
+cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
+source scripts/env.sh
+
+scripts/run_rtsp_inproc.sh outputs/rtsp_inproc
+```
+
+默认输出：
+
+```text
+outputs/rtsp_inproc/results.jsonl
+outputs/rtsp_inproc/run.log
+outputs/rtsp_inproc/.runtime/app_rtsp_runtime.yaml
+```
+
+注意：
+
+- MP4 转 RTSP 是为了模拟真实摄像头的 live-source、网络拉流、延迟和动态 pad。
+- 如果只是为了验证单进程多路合批，优先使用 `scripts/run_multifile_inproc.sh`，不必先转 RTSP。
+- RTMP 推流需要本机或局域网中存在 RTMP server，例如 nginx-rtmp 或 MediaMTX。当前优先验证 RTSP 拉流和单进程合批，RTMP 输出放到后续视频输出阶段处理。
 
 默认匹配：
 
@@ -1628,9 +1603,10 @@ outputs/benchmarks/benchmark_report.html
 建议方案：
 
 1. 保留当前 8 进程批处理作为离线验收和回归测试工具。
-2. 新增一个多 source pipeline 配置，不影响当前默认入口。
-3. 先实现本地 8 个 MP4 的单 pipeline 多路输入。
-4. 再把 RTSP/RTMP 摄像头接入放到最后。
+2. 先使用 `scripts/run_multifile_inproc.sh` 验证本地 8 个 MP4 的单进程多路输入。
+3. 跑通后，对比 `outputs/multifile_inproc/results.jsonl` 和当前 8 进程批处理结果。
+4. 再选择视频输出方案：`nvmultistreamtiler` 合成一路预览，或 `nvstreamdemux` 分路输出。
+5. 最后再把 RTSP/RTMP 摄像头接入放到真实流阶段。
 
 验收标准：
 
@@ -1720,18 +1696,215 @@ scripts/run_acceptance_ui.sh /path/to/long_video_dir outputs/acceptance_long
 
 RTSP/RTMP 先保留代码方向，但不作为当前阶段优先实现。等离线批量、多路性能和质量规则稳定后再做。
 
+如果暂时跳过长视频稳定性测试，那么下一个推荐节点不是直接接真实摄像头，而是先做：
+
+```text
+本地 MP4 -> 本地 RTSP 模拟器 -> 单进程 DeepStream RTSP 拉流
+```
+
+这个节点的价值是：在没有真实摄像头的情况下，提前验证 live-source、网络拉流、动态 pad、断流恢复、时间戳和实时帧率控制。
+
 建议方案：
 
-1. 先接 1 路 RTSP。
-2. 处理断流重连、网络抖动、延迟和时间戳。
-3. 再扩展到多路 RTSP。
-4. 最后考虑是否需要 RTMP/HLS/WebRTC 预览输出。
+1. 如果没有真实摄像头，先用 `scripts/serve_mp4_as_rtsp.py` 把本地 MP4 暴露成 `rtsp://127.0.0.1:8554/stream1..8`。
+2. 用 `scripts/run_rtsp_inproc.sh` 验证单进程 8 路 RTSP 拉流。
+3. 再接 1 路真实 RTSP 摄像头。
+4. 处理断流重连、网络抖动、延迟和时间戳。
+5. 再扩展到多路真实 RTSP。
+6. 最后考虑是否需要 RTMP/HLS/WebRTC 预览输出。
 
 验收标准：
 
 - 摄像头断开后能恢复或明确报错。
 - UI 能显示在线、断流、重连、失败状态。
 - JSONL 中时间戳能区分处理时间和源视频时间。
+
+### 20.5.1 从多线程解码推理 demo 吸收的优化策略
+
+项目中已有 `demo_multhread_decode_infer_mulmodel`，它是 RKNN/MPP/RGA 生态的 C++ demo，不建议直接复制到当前 DeepStream 项目中。当前项目应吸收它的工程策略，并按 DeepStream/Python 架构重新实现。
+
+#### 1. 限长队列和丢旧帧
+
+demo 中推流队列超过阈值后会丢弃最旧帧，避免输出端阻塞导致内存持续增长。
+
+当前项目的适配方式：
+
+- 不放进 DeepStream 主推理链路，主链路仍交给 `nvstreammux`、`queue` 和 DeepStream 调度。
+- 后续用于 UI 实时预览队列、RTMP/RTSP 输出队列或 WebSocket 推送队列。
+- 队列满时丢弃最旧帧，并记录 `frames_dropped`。
+
+建议落点：
+
+```text
+src/app/infrastructure/web/
+src/app/infrastructure/streaming/
+```
+
+验收标准：
+
+- 输出端卡顿时，主推理链路不被阻塞。
+- UI 或质量报告能看到丢帧计数。
+
+#### 2. 超时保活最后一帧
+
+demo 推流线程在没有新帧时会复用最后一帧，保持连接活跃。
+
+当前项目的适配方式：
+
+- 用于后续 RTMP/RTSP/HLS/WebRTC 输出。
+- 当一段时间没有新帧时，复用上一帧，或输出黑帧加状态文字。
+- 不影响 JSONL 结果，只影响视频预览输出。
+
+验收标准：
+
+- 短时间无新帧时，推流连接不断。
+- UI 显示“复用上一帧”或“源暂时无帧”的状态。
+
+#### 3. 本地 MP4 按源 FPS 限速
+
+demo 对本地文件按源视频 FPS 节流，避免本地文件模拟实时流时倍速播放。
+
+当前项目的适配方式：
+
+- 放到 `scripts/serve_mp4_as_rtsp.py` 和 `scripts/serve_mp4_as_rtsp_loop.py`。
+- FFmpeg 方案优先使用 `-re`。
+- GStreamer 方案使用 clock/sync 机制，例如 `identity sync=true` 或等价方式。
+- 记录源视频 FPS、推流 FPS 和 loop 次数。
+
+验收标准：
+
+- MP4 模拟 RTSP 时接近真实摄像头帧率。
+- 单进程 RTSP 拉流看到的是 live-source 行为，而不是离线极速读取。
+
+#### 4. 硬件路径失败后的 fallback
+
+demo 中 RGA 失败后回退 OpenCV，并限频打印错误。
+
+当前项目的适配方式：
+
+- DeepStream 主链路优先使用硬件解码、推理、OSD、编码。
+- 非主链路工具允许 fallback，例如 overlay 生成失败时保留原始 MP4，或生成 JSONL-only 结果。
+- 所有 fallback 都写入 `run_metadata.json`、`batch_quality.json` 或 `multifile_quality.json`。
+
+当前已完成：
+
+- probe 热路径异常已经增加限频日志。
+- GStreamer/pyds 导入失败会记录 warning。
+- 单 pipeline 失败也会生成 summary/quality。
+
+#### 5. 流读取失败后的重连策略
+
+demo 对本地文件 EOF 立即 reopen，对网络流失败延迟重连。
+
+当前项目的适配方式：
+
+- 本地 MP4 模拟 RTSP：播完立即 loop。
+- RTSP 网络流：断流后 5 到 10 秒重试。
+- 连续失败超过阈值后标记该路 failed，但其他路继续运行或至少生成清晰质量报告。
+
+建议新增状态文件：
+
+```text
+source_status.json
+```
+
+建议字段：
+
+```json
+{
+  "stream_id": "stream-0",
+  "uri": "rtsp://127.0.0.1:8554/stream1",
+  "status": "online|reconnecting|failed|eos",
+  "last_frame_at": "...",
+  "last_error": "",
+  "restart_count": 0,
+  "consecutive_failures": 0
+}
+```
+
+#### 6. 资源释放集中化
+
+demo 的 decoder、encoder、streaming manager 都有 stop/release 思路。
+
+当前项目的适配方式：
+
+- 继续强化 `PipelineManager.stop()`、`DashboardServer.stop()`、`JsonWriter.close()`、后续 streaming server stop。
+- 所有后台线程必须有停止信号、唤醒机制和 join。
+
+当前已完成：
+
+- bus 线程 stop 时 join。
+- dashboard HTTP 线程 stop 时 join。
+- frame result handler 异常不会打穿 probe 回调。
+
+#### 7. 多模型融合
+
+demo 的 `DetectionFusionManager` 使用 IoU、IoM、加权融合做多模型结果合并。
+
+当前项目的适配方式：
+
+- 先不放进当前 person-only 落地版。
+- 后续扩展安全帽、打电话、疲劳、摔倒等模型时再新增 fusion 层。
+- 建议新增：
+
+```text
+src/app/domain/fusion.py
+src/app/application/fusion_service.py
+configs/analytics/fusion.yaml
+```
+
+融合策略：
+
+- 同类目标用 IoU/NMS 去重。
+- 人体框与安全帽等嵌套小框用 IoM。
+- 多模型框用 weighted box fusion。
+- 输出 `fused_detections` 到 JSONL 和 UI。
+
+### 20.5.2 跳过长跑验收后的下一节点
+
+如果当前明确跳过“长视频稳定性测试”，下一节点建议做：
+
+```text
+MP4 模拟 RTSP 的真实时序和循环重连
+```
+
+目标：
+
+- 本地 8 个 MP4 以接近真实摄像头的方式推成 8 路 RTSP。
+- 每路 MP4 按源 FPS 或指定 FPS 推流，不倍速。
+- 每路播完自动 loop。
+- 推流进程异常退出后能重启或明确写出失败状态。
+- 生成 `source_status.json`，供 UI 或验收脚本读取。
+
+建议先实现脚本层能力：
+
+```text
+scripts/serve_mp4_as_rtsp_loop.py
+scripts/run_rtsp_inproc.sh
+```
+
+验收命令目标：
+
+```bash
+python3 scripts/serve_mp4_as_rtsp_loop.py \
+  --input-dir /home/nvidia/Desktop/YOLO/video \
+  --host 127.0.0.1 \
+  --port 8554 \
+  --loop \
+  --realtime
+
+scripts/run_rtsp_inproc.sh \
+  rtsp://127.0.0.1:8554 \
+  outputs/rtsp_inproc
+```
+
+验收标准：
+
+- 能看到 8 路 RTSP URL。
+- DeepStream 单进程能从 RTSP URL 拉流。
+- `outputs/rtsp_inproc/results.jsonl` 中出现 `stream-0..stream-7`。
+- 关闭某一路模拟器后，状态能变为 reconnecting 或 failed。
+- 恢复该路后，状态能重新变为 online。
 
 ### 20.6 服务化与部署收口
 

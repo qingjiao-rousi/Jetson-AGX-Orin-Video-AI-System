@@ -120,6 +120,10 @@ def check_video(
             elif estimated_fps < min_fps:
                 reviews.append(f"{stream_id}: estimated FPS {estimated_fps:.2f} < {min_fps:.2f}")
 
+    log_findings = _scan_log_for_failures(video.get("log_path"))
+    failures.extend(log_findings["failures"])
+    reviews.extend(log_findings["reviews"])
+
     quality_status = "failed" if failures else "review" if reviews else "passed"
     return {
         "index": index,
@@ -178,6 +182,42 @@ def _to_float(value: Any) -> float | None:
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _scan_log_for_failures(raw_path: Any) -> dict[str, list[str]]:
+    if not raw_path:
+        return {"failures": [], "reviews": []}
+    path = Path(str(raw_path))
+    if not path.is_file():
+        return {"failures": [], "reviews": []}
+    fatal_patterns = (
+        "Traceback",
+        "application crashed",
+        "RuntimeError:",
+        "failed to set GStreamer pipeline to PLAYING",
+    )
+    review_patterns = (
+        "WARNING",
+        "warning",
+    )
+    failures: list[str] = []
+    reviews: list[str] = []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {"failures": [], "reviews": []}
+    for line in lines:
+        if any(pattern in line for pattern in fatal_patterns):
+            failures.append(f"run log fatal: {line.strip()[:240]}")
+            if len(failures) >= 5:
+                break
+    if not failures:
+        for line in lines:
+            if any(pattern in line for pattern in review_patterns):
+                reviews.append(f"run log warning: {line.strip()[:240]}")
+                if len(reviews) >= 5:
+                    break
+    return {"failures": failures, "reviews": reviews}
 
 
 def print_quality(quality: dict[str, Any], output_path: Path) -> None:

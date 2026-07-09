@@ -53,11 +53,18 @@ class Orchestrator:
     def on_frame_result(self, result: FrameResult) -> None:
         if self._stop_event.is_set():
             return
-        parsed = self.meta_parser.parse(result)
-        self._last_result = parsed
-        self.backpressure_controller.observe(parsed)
-        self.fps_controller.observe(parsed)
-        self.json_writer.write(parsed)
+        try:
+            self._last_result = result
+            self.backpressure_controller.observe(result)
+            self.fps_controller.observe(result)
+            self.json_writer.write(result)
+            if hasattr(self.backpressure_controller, "mark_consumed"):
+                self.backpressure_controller.mark_consumed()
+        except Exception as exc:
+            message = f"frame result handler failed: {exc}"
+            logging.exception("frame result handler failed")
+            self.pipeline_manager.set_error(message)
+            self._stop_event.set()
 
     def handle_error(self, message: str) -> None:
         self.pipeline_manager.set_error(message)

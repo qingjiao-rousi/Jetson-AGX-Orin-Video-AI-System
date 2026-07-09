@@ -1,7 +1,7 @@
 [property]
 gpu-id=0
 net-scale-factor=0.00392156862745098
-model-engine-file=models/yolov8n.engine
+model-engine-file=models/yolov8s.engine
 labelfile-path=models/labels.txt
 batch-size=6
 network-mode=2
@@ -14,4 +14,3 @@ infer-dims=3;640;640
 custom-lib-path=custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
 parse-bbox-func-name=NvDsInferParseYolo
 cluster-mode=2
-

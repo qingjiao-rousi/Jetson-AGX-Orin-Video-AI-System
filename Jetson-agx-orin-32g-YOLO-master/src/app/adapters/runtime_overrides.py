@@ -131,7 +131,3 @@ def _find_property_insert_index(lines: list[str]) -> int:
         if line.strip().startswith("[class-attrs-"):
             return index
     return len(lines)
-    web = settings.web
-
-    if enable_web is not None:
-        web = replace(web, enabled=enable_web)
