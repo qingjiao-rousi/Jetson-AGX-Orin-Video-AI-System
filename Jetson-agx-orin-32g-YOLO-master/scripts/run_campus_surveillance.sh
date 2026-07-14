@@ -9,15 +9,17 @@ set -euo pipefail
 #   scripts/run_campus_surveillance.sh VIDEO_DIR [OUTPUT_DIR]
 #
 # 示例:
-#   scripts/run_campus_surveillance.sh /home/nvidia/Desktop/YOLO/video
-#   scripts/run_campus_surveillance.sh /home/nvidia/Desktop/YOLO/video outputs/campus_demo
+#   scripts/run_campus_surveillance.sh "$VIDEO_DIR"
+#   scripts/run_campus_surveillance.sh "$VIDEO_DIR" "$OUTPUT_ROOT/campus_demo"
 # ===========================================================================
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/scripts/project_paths.sh"
 
-VIDEO_DIR="${1:-/home/nvidia/Desktop/YOLO/video}"
-OUTPUT_DIR="${2:-outputs/campus_surveillance}"
+VIDEO_DIR="${1:-$VIDEO_DIR}"
+OUTPUT_DIR="${2:-$OUTPUT_ROOT/campus_surveillance}"
 
 RTSP_PORT="${RTSP_PORT:-8554}"
 SOURCE_COUNT="${SOURCE_COUNT:-8}"
@@ -114,8 +116,8 @@ deepstream:
   enable_tiler: true
   tiler_rows: 2
   tiler_columns: 4
-  tiler_width: 1920
-  tiler_height: 1080
+  tiler_width: 1280
+  tiler_height: 640
   output_sink: file
   output_video_path: $PREVIEW_MP4
   model_engine_path: models/yolov8s.engine

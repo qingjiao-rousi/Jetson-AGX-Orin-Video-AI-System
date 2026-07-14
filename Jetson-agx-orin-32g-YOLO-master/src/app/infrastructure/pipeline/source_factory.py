@@ -98,6 +98,8 @@ class SourceFactory:
         depay_name = f"depay-{index + 1}"
         parser_name = f"parser-{index + 1}"
         decoder_name = f"decoder-{index + 1}"
+        convert_name = f"nvvidconv-{index + 1}"
+        caps_name = f"source-caps-{index + 1}"
         queue_name = f"pre-mux-queue-{index + 1}"
 
         nodes = (
@@ -109,6 +111,10 @@ class SourceFactory:
                     "latency": 200,
                     "drop-on-latency": True,
                     "protocols": "tcp",
+                    "do-rtsp-keep-alive": True,
+                    "retry": 5,
+                    "timeout": 5_000_000,
+                    "tcp-timeout": 5_000_000,
                 },
                 stage="source",
                 flags={
@@ -160,9 +166,37 @@ class SourceFactory:
                 },
             ),
             SourceNodeSpec(
+                name=convert_name,
+                element="nvvideoconvert",
+                properties={},
+                stage="decode",
+                flags={
+                    "required": True,
+                    "live": True,
+                    "supports_probe": False,
+                    "hardware_accelerated": True,
+                },
+            ),
+            SourceNodeSpec(
+                name=caps_name,
+                element="capsfilter",
+                properties={"caps": "video/x-raw(memory:NVMM),format=NV12"},
+                stage="decode",
+                flags={
+                    "required": True,
+                    "live": True,
+                    "supports_probe": False,
+                    "hardware_accelerated": False,
+                },
+            ),
+            SourceNodeSpec(
                 name=queue_name,
                 element="queue",
-                properties={"max-size-buffers": 32},
+                properties={
+                    "max-size-buffers": 32,
+                    "max-size-time": 0,
+                    "max-size-bytes": 0,
+                },
                 stage="buffer",
                 flags={
                     "required": True,
@@ -176,7 +210,9 @@ class SourceFactory:
             (source_name, depay_name),
             (depay_name, parser_name),
             (parser_name, decoder_name),
-            (decoder_name, queue_name),
+            (decoder_name, convert_name),
+            (convert_name, caps_name),
+            (caps_name, queue_name),
         )
         return SourceBranchSpec(source=source, nodes=nodes, links=links, mux_input=queue_name)
 

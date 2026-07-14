@@ -3,6 +3,8 @@ set -u
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR" || exit 1
+# shellcheck disable=SC1091
+source "$ROOT_DIR/scripts/project_paths.sh"
 
 usage() {
     cat <<'USAGE'
@@ -10,8 +12,8 @@ Usage:
   scripts/run_acceptance_ui.sh [INPUT_VIDEO_DIR] [OUTPUT_BATCH_DIR]
 
 Default:
-  INPUT_VIDEO_DIR=/home/nvidia/Desktop/YOLO/video
-  OUTPUT_BATCH_DIR=outputs/acceptance_latest
+  INPUT_VIDEO_DIR=$VIDEO_DIR
+  OUTPUT_BATCH_DIR=$OUTPUT_ROOT/acceptance_latest
 
 Optional environment overrides:
   BATCH_JOBS=8
@@ -28,8 +30,8 @@ Examples:
   scripts/run_acceptance_ui.sh
 
   BATCH_JOBS=4 scripts/run_acceptance_ui.sh \
-    /home/nvidia/Desktop/YOLO/video \
-    outputs/acceptance_4
+    "$VIDEO_DIR" \
+    "$OUTPUT_ROOT/acceptance_4"
 
   START_UI=0 scripts/run_acceptance_ui.sh
 USAGE
@@ -40,8 +42,8 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     exit 0
 fi
 
-INPUT_DIR="${1:-/home/nvidia/Desktop/YOLO/video}"
-BATCH_DIR="${2:-outputs/acceptance_latest}"
+INPUT_DIR="${1:-$VIDEO_DIR}"
+BATCH_DIR="${2:-$OUTPUT_ROOT/acceptance_latest}"
 UI_HOST="${UI_HOST:-127.0.0.1}"
 UI_PORT="${UI_PORT:-8090}"
 START_UI="${START_UI:-1}"

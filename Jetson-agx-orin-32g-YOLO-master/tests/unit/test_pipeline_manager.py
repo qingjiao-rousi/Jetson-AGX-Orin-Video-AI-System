@@ -54,7 +54,32 @@ class FakeBuilder:
         }
 
 
+class FakeBuilderWithFakeOutput(FakeBuilder):
+    class Settings:
+        class DeepStream:
+            output_sink = "fake"
+
+        deepstream = DeepStream()
+
+    settings = Settings()
+    fallback_called = False
+
+    def build_runtime_with_fake_output(self):
+        self.fallback_called = True
+        raise AssertionError("fake output must not fall back to fake output")
+
+    def has_output_fallback_active(self) -> bool:
+        return False
+
+
 class PipelineManagerBusTests(unittest.TestCase):
+    def test_fake_output_does_not_attempt_redundant_output_fallback(self) -> None:
+        builder = FakeBuilderWithFakeOutput()
+        manager = PipelineManager(builder)
+
+        self.assertFalse(manager._try_rebuild_with_output_fallback(RuntimeError("device unavailable")))
+        self.assertFalse(builder.fallback_called)
+
     def test_start_registers_bus_watch_when_runtime_pipeline_exists(self) -> None:
         manager = PipelineManager(FakeBuilder())
 

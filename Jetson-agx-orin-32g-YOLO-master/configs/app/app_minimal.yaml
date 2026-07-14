@@ -16,7 +16,7 @@ web:
 sources:
   - name: local_video_01
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/11798561-hd_1920_1080_50fps.mp4
+    uri: ../video/11798561-hd_1920_1080_50fps.mp4
     enabled: true
 
 logging:
@@ -48,6 +48,7 @@ deepstream:
   enable_tracker: true
   enable_osd: true
   output_sink: file
+  output_url: rtmp://127.0.0.1/live/stream
   output_video_path: outputs/person_detect.mp4
   model_engine_path: models/yolov8s.engine
   custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so

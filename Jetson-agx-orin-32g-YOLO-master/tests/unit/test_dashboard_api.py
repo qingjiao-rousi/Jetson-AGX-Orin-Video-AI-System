@@ -156,6 +156,50 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(body, b"p4")
             self.assertEqual(headers["Content-Range"], "bytes 1-2/3")
 
+    def test_rtsp_dashboard_exposes_individual_video_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rtsp_dir = Path(tmp)
+            video = rtsp_dir / "individual" / "stream_01" / "stream_01_osd.mp4"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"mp4")
+            index = video.parents[1] / "individual_outputs.json"
+            index.write_text(
+                json.dumps(
+                    {
+                        "outputs": [
+                            {
+                                "stream_id": "stream_01",
+                                "video": str(video),
+                                "video_exists": True,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            api = DashboardApi(FakeDebugService(), WebSettings(enabled=True, rtsp_dir=rtsp_dir))
+
+            status, _content_type, body = api.route("/api/rtsp/dashboard", {})
+            payload = json.loads(body.decode("utf-8"))
+
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                payload["artifacts"]["individual_index"],
+                "/rtsp-files/individual/individual_outputs.json",
+            )
+            self.assertEqual(
+                payload["artifacts"]["individual_outputs"][0]["video_url"],
+                "/rtsp-files/individual/stream_01/stream_01_osd.mp4",
+            )
+
+            status, content_type, body = api.route(
+                "/rtsp-files/individual/stream_01/stream_01_osd.mp4",
+                {},
+            )
+            self.assertEqual(status, 200)
+            self.assertIn("video/mp4", content_type)
+            self.assertEqual(body, b"mp4")
+
     def test_server_stop_joins_http_thread(self) -> None:
         server = DashboardServer(FakeDebugService(), WebSettings(enabled=True))
 

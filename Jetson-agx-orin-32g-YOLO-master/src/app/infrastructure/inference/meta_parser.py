@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.domain.entities import BoundingBox, Detection, FrameResult, Track
+from app.domain.entities import BoundingBox, Detection, FrameResult, Track, canonical_stream_id
 
 
 class MetaParser:
@@ -98,18 +98,12 @@ class MetaParser:
 
     def _parse_stream_id(self, payload: dict[str, Any]) -> str:
         if "stream_id" in payload:
-            value = payload["stream_id"]
-            if isinstance(value, int):
-                return f"stream-{value}"
-            text = str(value)
-            if text.isdigit():
-                return f"stream-{text}"
-            return text
+            return canonical_stream_id(payload["stream_id"])
         if "source_id" in payload:
-            return f"stream-{payload['source_id']}"
+            return canonical_stream_id(payload["source_id"])
         if "pad_index" in payload:
-            return f"stream-{payload['pad_index']}"
-        return "stream-0"
+            return canonical_stream_id(payload["pad_index"])
+        return canonical_stream_id(None)
 
     def _parse_frame_id(self, payload: dict[str, Any]) -> int:
         if "frame_id" in payload:
@@ -160,6 +154,9 @@ class MetaParser:
                         width=float(bbox.get("width", 0.0)),
                         height=float(bbox.get("height", 0.0)),
                     ),
+                    global_track_id=self._parse_optional_int(
+                        item_dict.get("global_track_id", item_dict.get("object_id"))
+                    ),
                 )
             )
         return tracks
@@ -190,6 +187,14 @@ class MetaParser:
         except (TypeError, ValueError):
             return False
         return track_id >= 0 and track_id != 0xFFFFFFFFFFFFFFFF
+
+    def _parse_optional_int(self, value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _unwrap_batch_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         frame_meta = payload.get("frame_meta")

@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from app.domain.entities import FrameResult
+from app.domain.entities import FrameResult, canonical_stream_id
 from app.infrastructure.inference.meta_parser import MetaParser
 from app.infrastructure.pipeline.builder import PipelineBuilder
 from app.infrastructure.pipeline.probes import ProbeRegistry
@@ -65,6 +65,16 @@ class ProbeRegistryTests(unittest.TestCase):
 
 
 class MetaParserTests(unittest.TestCase):
+    def test_stream_ids_are_normalized_across_deepstream_and_simulator_forms(self) -> None:
+        self.assertEqual(canonical_stream_id(3), "stream-3")
+        self.assertEqual(canonical_stream_id("3"), "stream-3")
+        self.assertEqual(canonical_stream_id("stream-3"), "stream-3")
+        self.assertEqual(canonical_stream_id("stream3"), "stream-2")
+
+        parser = MetaParser()
+        self.assertEqual(parser.parse({"stream_id": "stream3"}).stream_id, "stream-2")
+        self.assertEqual(parser.parse({"stream_id": "stream-3"}).stream_id, "stream-3")
+
     def test_parse_supports_deepstream_style_object_meta(self) -> None:
         parser = MetaParser()
         payload = {
@@ -296,7 +306,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
 
         self.assertEqual(captured["result"].stream_id, "stream-5")
         self.assertEqual(captured["result"].detections[0].class_name, "cat")
-        self.assertEqual(captured["result"].tracks[0].track_id, 77)
+        self.assertEqual(captured["result"].tracks[0].track_id, 1)
         self.assertEqual(captured["result"].tracks[0].confidence, 0.66)
 
     def test_probe_updates_osd_text_with_track_id(self) -> None:
@@ -354,7 +364,18 @@ class BuilderProbeDispatchTests(unittest.TestCase):
 
         builder._apply_osd_track_labels(FakeBatch())
 
-        self.assertEqual(FakeObject.text_params.display_text, "person ID:42 0.90")
+        self.assertEqual(FakeObject.text_params.display_text, "person ID:1 0.90")
+
+    def test_probe_uses_independent_local_track_ids_per_stream(self) -> None:
+        builder = PipelineBuilder(AppSettings())
+        builder._runtime_factory._pyds = None
+
+        self.assertEqual(builder._local_track_id(0, 42), 1)
+        self.assertEqual(builder._local_track_id(0, 42), 1)
+        self.assertEqual(builder._local_track_id(0, 77), 2)
+        self.assertEqual(builder._local_track_id(1, 100), 1)
+        self.assertEqual(builder._local_track_id(1, 101), 2)
+        self.assertEqual(builder._local_track_id(2, 42), 1)
 
     def test_probe_batch_meta_extract_logs_exceptions_with_rate_limit(self) -> None:
         builder = PipelineBuilder(AppSettings())

@@ -1,0 +1,143 @@
+[33mFactory Details:[0m
+  [94mRank                     [0mprimary (256)[0m
+  [94mLong-name                [0mStream multiplexer[0m
+  [94mKlass                    [0mGeneric[0m
+  [94mDescription              [0mN-to-1 pipe stream multiplexing[0m
+  [94mAuthor                   [0mNVIDIA Corporation. Post on Deepstream for Tesla forum for any queries @ https://devtalk.nvidia.com/default/board/209/[0m
+
+[33mPlugin Details[0m:
+  [94mName                     [0m[0mnvdsgst_multistream[0m
+  [94mDescription              [0m[0mNVIDIA Multistream mux/demux plugin[0m
+  [94mFilename                 [0m[0m/opt/nvidia/deepstream/deepstream-7.1/lib/gst-plugins/libnvdsgst_multistream.so[0m
+  [94mVersion                  [0m[0m7.1.0[0m
+  [94mLicense                  [0m[0mProprietary[0m
+  [94mSource module            [0m[0mnvmultistream[0m
+  [94mBinary package           [0m[0mNVIDIA Multistream Plugins[0m
+  [94mOrigin URL               [0m[0mhttp://nvidia.com/[0m
+
+[32mGObject[0m
+ [95m+----[0m[32mGInitiallyUnowned[0m
+       [95m+----[0m[32mGstObject[0m
+             [95m+----[0m[32mGstElement[0m
+                   [95m+----[0m[32mGstNvStreamMux[0m
+
+[33mPad Templates[0m:
+  [94mSINK template[0m: [0m'sink_%u'[0m
+    [94mAvailability[0m: [0mOn request[0m
+    [94mCapabilities[0m:
+      [33mvideo/x-raw[0m([32mmemory:NVMM[0m)
+        [36m         format[0m: [94m{ (string)NV12, (string)RGBA, (string)I420 }[0m
+        [36m          width[0m: [94m[ 1, 2147483647 ][0m
+        [36m         height[0m: [94m[ 1, 2147483647 ][0m
+        [36m      framerate[0m: [94m[ 0/1, 2147483647/1 ][0m
+  
+  [94mSRC template[0m: [0m'src'[0m
+    [94mAvailability[0m: [0mAlways[0m
+    [94mCapabilities[0m:
+      [33mvideo/x-raw[0m([32mmemory:NVMM[0m)
+        [36m         format[0m: [94m{ (string)NV12, (string)RGBA, (string)I420 }[0m
+        [36m          width[0m: [94m[ 1, 2147483647 ][0m
+        [36m         height[0m: [94m[ 1, 2147483647 ][0m
+        [36m      framerate[0m: [94m[ 0/1, 2147483647/1 ][0m
+
+[0mElement has no clocking capabilities.[0m
+[0mElement has no URI handling capabilities.[0m
+
+[33mPads:[0m
+  [94mSRC[0m: [0m'src'[0m
+    [94mPad Template[0m: [0m'src'[0m
+
+[33mElement Properties[0m:
+  [94malign-inputs        [0m: [0mBoolean property to force timestamp align of input frames.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mfalse[0m
+  [94masync-process       [0m: [0mBoolean property to enable/disable asynchronous processing of input frames for performance.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mtrue[0m
+  [94mattach-sys-ts       [0m: [0mIf set to TRUE, system timestamp will be attached as ntp timestamp.
+			If set to FALSE, ntp timestamp from rtspsrc, if available, will be attached.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mtrue[0m
+  [94mbatch-size          [0m: [0mMaximum number of buffers in a batch[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mUnsigned Integer[0m. [33mRange[0m: [36m0 - 1024[0m [33mDefault[0m: [36m0[0m 
+  [94mbatched-push-timeout[0m: [0mTimeout in microseconds to wait after the first buffer is available
+			to push the batch even if the complete batch is not formed.
+			Set to -1 to wait infinitely[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mInteger[0m. [33mRange[0m: [36m-1 - 2147483647[0m [33mDefault[0m: [36m-1[0m 
+  [94mbuffer-pool-size    [0m: [0mMaximum number of buffers from muxer's output pool[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mUnsigned Integer[0m. [33mRange[0m: [36m4 - 1024[0m [33mDefault[0m: [36m4[0m 
+  [94mcompute-hw          [0m: [0mCompute Scaling HW[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m, [36m可控制[0m
+                        [32mEnum "GstNvComputeHWType"[0m [33mDefault[0m: [36m0, "Default"[0m
+                           [33m(0)[0m: [36mDefault         [0m - [0mDefault, GPU for Tesla, VIC for Jetson[0m
+                           [33m(1)[0m: [36mGPU             [0m - [0mGPU[0m
+                           [33m(2)[0m: [36mVIC             [0m - [0mVIC[0m
+  [94mdrop-pipeline-eos   [0m: [0mBoolean property so that EOS is not propagated downstream when all the sink pads are at EOS. (Experimental)[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mfalse[0m
+  [94menable-padding      [0m: [0mMaintain input aspect ratio when scaling by padding with black bands.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mfalse[0m
+  [94mextract-sei-type5-data[0m: [0mSet to extract and attach SEI type5 unregistered data on output buffer, for debugging purpose[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mfalse[0m
+  [94mframe-duration      [0m: [0mDuration of input frames in milliseconds for use in NTP timestamp correction based on frame rate.
+			If set to 0, frame duration is inferred automatically from PTS values.
+			If set to -1, disables frame rate based NTP timestamp correction. (default)[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mUnsigned Integer64[0m. [33mRange[0m: [36m0 - 18446744073709551615[0m [33mDefault[0m: [36m18446744073709[0m 
+  [94mframe-num-reset-on-eos[0m: [0mReset frame numbers to 0 for a source from which EOS is received (For debugging purpose only)[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mfalse[0m
+  [94mframe-num-reset-on-stream-reset[0m: [0mReset frame numbers to 0 for a source which needs to be reset. (For debugging purpose only)
+Needs to be paired with tracking-id-reset-mode=1 in the tracker config.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mfalse[0m
+  [94mgpu-id              [0m: [0mSet GPU Device ID[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mUnsigned Integer[0m. [33mRange[0m: [36m0 - 4294967295[0m [33mDefault[0m: [36m0[0m 
+  [94mheight              [0m: [0mHeight of each frame in output batched buffer. This property MUST be set.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mUnsigned Integer[0m. [33mRange[0m: [36m0 - 4294967295[0m [33mDefault[0m: [36m0[0m 
+  [94minterpolation-method[0m: [0mSet interpolation methods[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m, [36m可控制[0m
+                        [32mEnum "GstNvInterpolationMethod"[0m [33mDefault[0m: [36m1, "Bilinear"[0m
+                           [33m(0)[0m: [36mNearest         [0m - [0mNearest[0m
+                           [33m(1)[0m: [36mBilinear        [0m - [0mBilinear[0m
+                           [33m(2)[0m: [36mAlgo-1          [0m - [0mGPU - Cubic, VIC - 5 Tap[0m
+                           [33m(3)[0m: [36mAlgo-2          [0m - [0mGPU - Super, VIC - 10 Tap[0m
+                           [33m(4)[0m: [36mAlgo-3          [0m - [0mGPU - LanzoS, VIC - Smart[0m
+                           [33m(5)[0m: [36mAlgo-4          [0m - [0mGPU - Ignored, VIC - Nicest[0m
+                           [33m(6)[0m: [36mDefault         [0m - [0mGPU - Nearest, VIC - Nearest[0m
+  [94mlive-source         [0m: [0mBoolean property to inform muxer that sources are live.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mfalse[0m
+  [94mmax-latency         [0m: [0mAdditional latency in live mode to allow upstream to take longer to produce buffers for the current position (in nanoseconds)[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mUnsigned Integer[0m. [33mRange[0m: [36m0 - 4294967295[0m [33mDefault[0m: [36m0[0m 
+  [94mname                [0m: [0mThe name of the object[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m, 0x[36m2000[0m
+                        [32mString[0m. [33mDefault[0m: [36m"nvstreammux0"[0m
+  [94mnum-surfaces-per-frame[0m: [0mMax number of surfaces per frame[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mUnsigned Integer[0m. [33mRange[0m: [36m1 - 4[0m [33mDefault[0m: [36m1[0m 
+  [94mnvbuf-memory-type   [0m: [0mType of NvBufSurface Memory to be allocated for output buffers[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m, [36m只能在NULL、或READY状态下改变[0m
+                        [32mEnum "GstNvBufMemoryType"[0m [33mDefault[0m: [36m0, "nvbuf-mem-default"[0m
+                           [33m(0)[0m: [36mnvbuf-mem-default[0m - [0mDefault memory allocated, specific to particular platform[0m
+                           [33m(1)[0m: [36mnvbuf-mem-cuda-pinned[0m - [0mAllocate Pinned/Host cuda memory[0m
+                           [33m(2)[0m: [36mnvbuf-mem-cuda-device[0m - [0mAllocate Device cuda memory[0m
+                           [33m(3)[0m: [36mnvbuf-mem-cuda-unified[0m - [0mAllocate Unified cuda memory[0m
+                           [33m(4)[0m: [36mnvbuf-mem-surface-array[0m - [0mAllocate Surface Array memory, applicable for Jetson[0m
+  [94mparent              [0m: [0mThe parent of the object[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m, 0x[36m2000[0m
+                        [0mObject of type[0m [32m"GstObject"[0m
+  [94msync-inputs         [0m: [0mBoolean property to force sychronization of input frames.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mBoolean[0m. [33mDefault[0m: [36mfalse[0m
+  [94mwidth               [0m: [0mWidth of each frame in output batched buffer. This property MUST be set.[0m
+                        [33mflags[0m: [36m可读[0m, [36m可写[0m
+                        [32mUnsigned Integer[0m. [33mRange[0m: [36m0 - 4294967295[0m [33mDefault[0m: [36m0[0m 

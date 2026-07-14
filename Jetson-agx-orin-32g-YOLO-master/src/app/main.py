@@ -20,6 +20,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-video", type=Path, help="Local MP4 input path.")
     parser.add_argument("--output-video", type=Path, help="Output MP4 path.")
     parser.add_argument("--output-json", type=Path, help="Output JSONL path.")
+    parser.add_argument("--output-dir", type=Path, help="Unified output directory for JSONL, metrics, logs and video.")
+    parser.add_argument("--output-sink", choices=("fake", "file", "rtmp", "rtsp"), help="Override output sink.")
+    parser.add_argument("--output-url", help="Override RTMP/RTSP output URL.")
     parser.add_argument("--output-width", type=int, help="Encoded output width.")
     parser.add_argument("--output-height", type=int, help="Encoded output height.")
     parser.add_argument("--confidence-threshold", type=float, help="YOLO pre-cluster threshold.")
@@ -38,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Directory for per-run generated DeepStream config files.",
     )
+    parser.add_argument(
+        "--run-seconds",
+        type=float,
+        help="Stop automatically after this many seconds. Useful for live RTSP smoke tests.",
+    )
     return parser.parse_args()
 
 
@@ -55,6 +63,9 @@ def main() -> int:
         person_only=not args.all_classes,
         enable_web=False if args.no_web else None,
         runtime_dir=args.runtime_dir,
+        output_dir=args.output_dir,
+        output_sink=args.output_sink,
+        output_url=args.output_url,
     )
     app = create_application(args.config, settings=settings)
 
@@ -63,7 +74,7 @@ def main() -> int:
         if app.dashboard_server is not None:
             app.dashboard_server.start()
         app.orchestrator.start()
-        app.orchestrator.run_forever()
+        app.orchestrator.run_forever(max_runtime_seconds=args.run_seconds)
         return 0
     except KeyboardInterrupt:
         logging.info("shutdown requested by user")

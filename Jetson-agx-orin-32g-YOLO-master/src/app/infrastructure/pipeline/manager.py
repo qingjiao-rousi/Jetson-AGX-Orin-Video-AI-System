@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from threading import Event, Thread, current_thread
 
 from app.domain.entities import PipelineState
@@ -33,7 +34,11 @@ class PipelineManager:
         self._pipeline = self._runtime["blueprint"]
         self._stop_event.clear()
         self._attach_bus_watch()
-        self._set_pipeline_state_playing()
+        try:
+            self._set_pipeline_state_playing()
+        except RuntimeError as exc:
+            if not self._try_rebuild_with_output_fallback(exc):
+                raise
         self._start_bus_polling()
         self._running = True
         self._last_error = None
@@ -47,6 +52,7 @@ class PipelineManager:
             pipeline = self._runtime.get("pipeline")
             gst = self._runtime.get("gst")
             if pipeline is not None and gst is not None and hasattr(pipeline, "set_state"):
+                self._finalize_file_output(pipeline, gst)
                 pipeline.set_state(gst.State.NULL)
         if bus_thread is not None and bus_thread is not current_thread() and bus_thread.is_alive():
             bus_thread.join(timeout=1.0)
@@ -55,6 +61,24 @@ class PipelineManager:
         self._runtime = None
         self._bus_watch_attached = False
         self._bus_thread = None
+
+    def _finalize_file_output(self, pipeline, gst) -> None:
+        if not self._runtime:
+            return
+        blueprint = self._runtime.get("blueprint")
+        output_policy = getattr(blueprint, "output_policy", {}) if blueprint is not None else {}
+        if not output_policy.get("enable_file_sink"):
+            return
+        if not hasattr(pipeline, "send_event") or not hasattr(gst, "Event"):
+            return
+        bus = pipeline.get_bus() if hasattr(pipeline, "get_bus") else None
+        try:
+            pipeline.send_event(gst.Event.new_eos())
+            if bus is not None and hasattr(bus, "timed_pop_filtered"):
+                message_types = gst.MessageType.ERROR | gst.MessageType.EOS
+                bus.timed_pop_filtered(3_000_000_000, message_types)
+        except Exception as exc:
+            logging.warning("failed to finalize file output with EOS: %s", exc)
 
     def restart(self) -> None:
         self.stop()
@@ -197,6 +221,36 @@ class PipelineManager:
             self._running = False
             raise RuntimeError(self._last_error)
 
+    def _try_rebuild_with_output_fallback(self, exc: RuntimeError) -> bool:
+        if not hasattr(self._builder, "build_runtime_with_fake_output"):
+            return False
+        settings = getattr(self._builder, "settings", None)
+        deepstream = getattr(settings, "deepstream", None)
+        if getattr(deepstream, "output_sink", None) == "fake":
+            return False
+        if hasattr(self._builder, "has_output_fallback_active") and self._builder.has_output_fallback_active():
+            return False
+        logging_message = f"pipeline PLAYING failed; trying fake output fallback: {exc}"
+        logging.warning(logging_message)
+        old_runtime = self._runtime or {}
+        old_pipeline = old_runtime.get("pipeline")
+        gst = old_runtime.get("gst")
+        if old_pipeline is not None and gst is not None and hasattr(old_pipeline, "set_state"):
+            old_pipeline.set_state(gst.State.NULL)
+
+        self._runtime = self._builder.build_runtime_with_fake_output()
+        self._runtime["probe_registry"] = self._probes
+        self._runtime["meta_parser"] = self._meta_parser
+        if hasattr(self._builder, "attach_probe_points"):
+            self._runtime["probe_attachments"] = self._builder.attach_probe_points(self._runtime)
+        self._pipeline = self._runtime["blueprint"]
+        self._bus_watch_attached = False
+        self._attach_bus_watch()
+        self._set_pipeline_state_playing()
+        self._last_warning = logging_message
+        self._last_error = None
+        return True
+
     def _on_bus_message(self, bus, message) -> None:
         _ = bus
         message_type = getattr(message, "type", None)
@@ -205,11 +259,17 @@ class PipelineManager:
 
         if message_name == "ERROR":
             error, _debug = message.parse_error()
+            if self._is_live_source_recoverable_error(str(error)):
+                self._last_warning = f"recoverable live source error: {error}"
+                return
             self._last_error = str(error)
             self._running = False
             return
 
         if message_name == "EOS":
+            if self._is_live_source_runtime():
+                self._last_warning = "live source EOS received; keeping pipeline active for reconnect"
+                return
             self._running = False
             return
 
@@ -243,3 +303,25 @@ class PipelineManager:
         if self._running:
             return "PLAYING"
         return "NULL"
+
+    def _is_live_source_runtime(self) -> bool:
+        runtime = self._runtime or {}
+        flags = runtime.get("runtime_flags", {})
+        return bool(flags.get("live_source"))
+
+    def _is_live_source_recoverable_error(self, error: str) -> bool:
+        if not self._is_live_source_runtime():
+            return False
+        recoverable_markers = (
+            "Could not read from resource",
+            "Could not connect",
+            "Connection refused",
+            "Connection timed out",
+            "The server closed the connection",
+            "Internal data stream error",
+            "streaming stopped",
+            "No route to host",
+            "Network is unreachable",
+        )
+        lowered = error.lower()
+        return any(marker.lower() in lowered for marker in recoverable_markers)

@@ -58,7 +58,7 @@ const els = {
   multifileReview: document.getElementById("multifile-review"),
   multifileFailed: document.getElementById("multifile-failed"),
   multifileTableBody: document.getElementById("multifile-table-body"),
-  multifileVideo: document.getElementById("multifile-video"),
+  multifileIndividualVideos: document.getElementById("multifile-individual-videos"),
   multifileDetail: document.getElementById("multifile-detail"),
 };
 
@@ -196,6 +196,10 @@ function formatBytes(bytes) {
 
 // 数据规范化和流处理
 function normalizeStreams(status) {
+  if ((status.rtsp_summary || status.preview_video) && Array.isArray(status.streams) && status.streams.length > 0) {
+    return status.streams;
+  }
+
   const batchVideos = state.batchPayload?.videos || [];
   if (batchVideos.length > 0) {
     return batchVideos.map(batchVideoToStream);
@@ -224,7 +228,7 @@ function normalizeStreams(status) {
     last_warning: index === 2 ? "帧到达偏慢" : null,
     last_error: null,
     last_message_type: status.bus?.last_message_type || "STATE_CHANGED",
-    note: "OSD 输出预览占位",
+    note: "等待独立 OSD 推理视频",
   }));
 }
 
@@ -273,16 +277,25 @@ function renderOverview(payload, streams) {
   const batchSummary = state.batchPayload?.summary || {};
   const batchQuality = state.batchPayload?.quality || {};
   const hasBatch = (state.batchPayload?.videos || []).length > 0;
+  const hasRtsp = Boolean(status.rtsp_summary || status.preview_video);
   const alerts = streams.filter(hasAlert);
   const fpsValues = streams.map((item) => Number(item.fps)).filter((item) => Number.isFinite(item));
   const avgFps = fpsValues.length
     ? (fpsValues.reduce((sum, item) => sum + item, 0) / fpsValues.length).toFixed(1)
     : "-";
+  const totalProcessingFps = Number(
+    status.runtime_metrics?.processing_fps || status.rtsp_summary?.processing_fps || 0,
+  );
 
   const pipelineState = hasBatch ? "BATCH_READY" : pipelineStatus.pipeline_state || "UNKNOWN";
   els.metricState.textContent = pipelineState;
-  els.metricState.className = pipelineState === "PLAYING" || pipelineState === "BATCH_READY" ? "metric-value ok" : "metric-value";
-  els.metricStateSub.textContent = hasBatch ? `质量: ${batchQuality.passed_count ?? 0} passed` : `Bus: ${bus.last_message_type || "NONE"}`;
+  els.metricState.className =
+    pipelineState === "PLAYING" || pipelineState === "BATCH_READY" || pipelineState === "READY" ? "metric-value ok" : "metric-value";
+  els.metricStateSub.textContent = hasBatch
+    ? `质量: ${batchQuality.passed_count ?? 0} passed`
+    : hasRtsp
+    ? `质量: ${status.rtsp_quality?.quality_status || "unknown"}`
+    : `Bus: ${bus.last_message_type || "NONE"}`;
 
   els.metricStreams.textContent = String(hasBatch ? batchSummary.video_count ?? streams.length : status.source_count ?? streams.length);
   const runningCount = streams.filter((item) => item.state !== "ERROR").length;
@@ -293,8 +306,12 @@ function renderOverview(payload, streams) {
     ? "当前页面展示批量结果，不读取实时 GPU"
     : `内存 ${monitor.utilization_memory ?? "-"}% / 温度 ${monitor.temperature_c ?? "-"}°C`;
 
-  els.metricFps.textContent = formatFps(avgFps);
-  els.metricFpsSub.textContent = hasBatch ? "批量结果时间轴 FPS" : `${status.controllers?.fps?.observations ?? 0} 次观测`;
+  els.metricFps.textContent = formatFps(totalProcessingFps || avgFps);
+  els.metricFpsSub.textContent = hasBatch
+    ? "批量结果时间轴 FPS"
+    : hasRtsp
+    ? `总处理 FPS / 单路均值: ${formatFps(totalProcessingFps)} / ${formatFps(avgFps)}`
+    : `${status.controllers?.fps?.observations ?? 0} 次观测`;
 
   els.metricAlerts.textContent = String(alerts.length);
   els.metricAlerts.className = alerts.length > 0 ? "metric-value warn" : "metric-value ok";
@@ -307,7 +324,11 @@ function renderOverview(payload, streams) {
   els.optimizationState.textContent = payload.optimization?.mode || "advisory_only";
 
   const filterLabel = state.filter === "alerts" ? "仅显示告警" : "显示全部";
-  els.videoWallNote.textContent = hasBatch ? `${streams.length} 个批量输出 / ${filterLabel}` : `${streams.length} 路视频 / ${filterLabel}`;
+  els.videoWallNote.textContent = hasBatch
+    ? `${streams.length} 个批量输出 / ${filterLabel}`
+    : hasRtsp
+    ? `${streams.length} 路 RTSP health / 合成 OSD 在主视图播放`
+    : `${streams.length} 路视频 / ${filterLabel}`;
 
   els.snapshotTime.textContent = formatTimestamp(payload.generated_at || status.app?.snapshot_at);
   state.lastUpdateTime = new Date();
@@ -320,15 +341,16 @@ function renderScreen(target, stream, large = false) {
     return;
   }
 
-  if (stream.playback) {
+  const playable = large && stream.preview_playback ? stream.preview_playback : stream.playback || "";
+  if (playable) {
     const title = escapeHtml(stream.title || stream.name);
     const source = escapeHtml(stream.source || "");
     const currentVideo = target.querySelector("video");
-    if (!currentVideo || currentVideo.getAttribute("src") !== stream.playback) {
+    if (!currentVideo || currentVideo.getAttribute("src") !== playable) {
       target.innerHTML = `
-        <video controls preload="metadata" playsinline src="${escapeHtml(stream.playback)}" style="width: 100%; height: 100%; min-height: ${large ? "420px" : "180px"}; object-fit: contain; background: #0f172a;"></video>
+        <video controls preload="metadata" playsinline type="video/mp4" src="${escapeHtml(playable)}" style="width: 100%; height: 100%; min-height: ${large ? "420px" : "180px"}; object-fit: contain; background: #0f172a;"></video>
         <div class="screen-line" style="position: absolute; left: 16px; right: 16px; bottom: 16px; pointer-events: none;">
-          <span class="badge" data-screen-title>${title}</span>
+          <span class="badge" data-screen-title>${large && stream.preview_playback ? "独立 OSD 推理视频" : title}</span>
           <span class="badge" data-screen-source>${source}</span>
         </div>
       `;
@@ -372,6 +394,9 @@ function renderSelected(stream) {
   if (!stream) return;
 
   els.selectedSubtitle.textContent = `${stream.name} / ${stream.source || "视频源待接入"}`;
+  if (stream.preview_playback) {
+    els.selectedSubtitle.textContent = `独立 OSD 推理视频 / ${stream.preview_playback}`;
+  }
   els.selectedStatus.textContent = stream.state || "UNKNOWN";
   els.selectedStatus.className = `status ${statusClass(stream.state)}`;
 
@@ -424,8 +449,8 @@ function renderVideoWall(streams) {
       statusEl.className = `status ${statusClass(stream.state)}`;
       statusEl.textContent = stream.state || "RUNNING";
     }
-    if (fpsEl) fpsEl.textContent = `FPS: ${formatFps(stream.fps)} / 延迟: ${stream.latency_ms ?? "-"} ms`;
-    if (countEl) countEl.textContent = `人数: ${stream.detections ?? 0} / 丢帧: ${stream.dropped_frames ?? 0}`;
+    if (fpsEl) fpsEl.textContent = `FPS: ${formatFps(stream.fps)} / 帧龄: ${stream.latency_ms ?? "-"} ms`;
+    if (countEl) countEl.textContent = `检测: ${stream.detections ?? 0} / 丢帧: ${stream.dropped_frames ?? 0}`;
   });
 
   // 为每个视频屏幕渲染占位内容
@@ -553,10 +578,10 @@ function renderDrawer(stream) {
       <h3>性能指标</h3>
       <p>
         <strong>当前 FPS:</strong> ${formatFps(stream.fps)}<br>
-        <strong>端到端延迟:</strong> ${stream.latency_ms ?? "-"} ms<br>
-        <strong>检测对象数:</strong> ${stream.detections ?? 0}<br>
+        <strong>最近帧年龄:</strong> ${stream.latency_ms ?? "-"} ms<br>
+        <strong>最近帧检测对象数:</strong> ${stream.detections ?? 0}<br>
         <strong>累计丢帧数:</strong> ${stream.dropped_frames ?? 0}<br>
-        <strong>丢帧率:</strong> ${stream.dropped_frames && stream.fps ? ((stream.dropped_frames / (stream.fps * 10)) * 100).toFixed(2) : "0.00"}%
+        <strong>估算丢帧率:</strong> ${((Number(stream.dropped_frame_rate || 0)) * 100).toFixed(2)}%
       </p>
     </section>
     <section class="drawer-section">
@@ -593,6 +618,19 @@ function renderBatchDashboard(payload) {
   els.batchNote.textContent = payload.batch_dir
     ? `批量目录: ${payload.batch_dir}`
     : "尚未生成批量结果";
+  renderBatchSummaryMetrics(summary, quality, videos);
+  renderBatchArtifacts(payload.artifacts || {});
+
+  if (!state.selectedBatchVideo && videos.length > 0) {
+    state.selectedBatchVideo = String(videos[0].index || 1);
+  }
+
+  renderBatchTable(videos);
+  renderBatchDetail(videos.find((video) => String(video.index) === state.selectedBatchVideo) || videos[0]);
+  if (state.lastPayload) render(state.lastPayload);
+}
+
+function renderBatchSummaryMetrics(summary, quality, videos) {
   els.batchTotal.textContent = String(summary.video_count ?? videos.length ?? 0);
   els.batchOk.textContent = String(summary.processed_count ?? 0);
   els.batchReview.textContent = String(quality.review_count ?? 0);
@@ -602,16 +640,42 @@ function renderBatchDashboard(payload) {
   els.batchDuration.textContent = formatDuration(summary.total_duration_seconds);
   els.batchJobs.textContent = String(summary.batch_jobs ?? "-");
   els.batchProcessingFps.textContent = formatFps(summary.processing_fps);
-  renderBatchArtifacts(payload.artifacts || {});
   renderAcceptanceConclusion(summary, quality);
+}
 
-  if (!state.selectedBatchVideo && videos.length > 0) {
-    state.selectedBatchVideo = String(videos[0].index || 1);
-  }
+function renderRtspAcceptanceSummary(payload) {
+  const summary = payload.summary || {};
+  const quality = payload.quality || {};
+  const runtimeMetrics = payload.runtime_metrics || {};
+  const expected = Number(summary.expected_stream_count || 0);
+  const observed = Number(summary.observed_stream_count || 0);
+  const passed = Number(quality.passed_stream_count || 0);
+  const review = Number(quality.review_stream_count || 0);
+  const failed = Number(quality.failed_stream_count || 0);
+  const status = quality.quality_status || "unknown";
 
-  renderBatchTable(videos);
-  renderBatchDetail(videos.find((video) => String(video.index) === state.selectedBatchVideo) || videos[0]);
-  if (state.lastPayload) render(state.lastPayload);
+  els.batchNote.textContent = payload.rtsp_dir
+    ? `当前生产验收目录: ${payload.rtsp_dir}`
+    : "尚未生成生产验收结果";
+  els.batchTotal.textContent = String(expected || observed || 0);
+  els.batchOk.textContent = String(passed);
+  els.batchReview.textContent = String(review);
+  els.batchFailed.textContent = String(failed);
+  els.batchPersons.textContent = String(summary.total_unique_persons ?? 0);
+  els.batchLine.textContent = `${summary.total_detections ?? 0} / ${summary.total_track_observations ?? 0}`;
+  els.batchDuration.textContent = formatDuration(summary.run_seconds || runtimeMetrics.elapsed_seconds);
+  els.batchJobs.textContent = String(summary.expected_stream_count ?? "-");
+  els.batchProcessingFps.textContent = formatFps(summary.processing_fps || runtimeMetrics.processing_fps);
+  els.acceptanceTitle.textContent =
+    status === "passed" ? "本次生产验收通过" : status === "failed" ? "本次生产验收失败" : "本次生产验收需要复核";
+  els.acceptanceDetail.textContent =
+    `${observed}/${expected} 路 RTSP 已输出，帧数 ${summary.total_frame_count ?? 0}，检测 ${summary.total_detections ?? 0}，处理 FPS ${formatFps(summary.processing_fps || runtimeMetrics.processing_fps)}`;
+  renderBatchArtifacts({
+    summary: payload.artifacts?.summary,
+    quality: payload.artifacts?.quality,
+    html_report: payload.artifacts?.tiled_video,
+    csv_report: payload.artifacts?.metrics_jsonl,
+  });
 }
 
 function renderBatchArtifacts(artifacts) {
@@ -771,8 +835,9 @@ function renderMultifileDashboard(payload) {
     streamQuality[item.stream_id] = item;
   });
 
-  els.multifileNote.textContent = payload.multifile_dir
-    ? `单 Pipeline 目录: ${payload.multifile_dir}`
+  const pipelineDir = payload.rtsp_dir || payload.multifile_dir;
+  els.multifileNote.textContent = pipelineDir
+    ? `单 Pipeline 目录: ${pipelineDir}`
     : "尚未生成单 Pipeline 结果";
   els.multifileStatus.textContent = quality.quality_status || "unknown";
   els.multifileStatus.className = `status ${qualityClass(quality.quality_status || "unknown")}`;
@@ -783,31 +848,49 @@ function renderMultifileDashboard(payload) {
   els.multifileReview.textContent = String(quality.review_stream_count ?? 0);
   els.multifileFailed.textContent = String(quality.failed_stream_count ?? 0);
   renderMultifileArtifacts(artifacts);
+  renderIndividualVideos(artifacts.individual_outputs || []);
   renderMultifileTable(streams, streamQuality);
   renderMultifileDetail(payload);
-
-  if (artifacts.tiled_video) {
-    if (els.multifileVideo.getAttribute("src") !== artifacts.tiled_video) {
-      els.multifileVideo.setAttribute("src", artifacts.tiled_video);
-      els.multifileVideo.load();
-    }
-  } else {
-    els.multifileVideo.removeAttribute("src");
+  if (payload.rtsp_dir) {
+    renderRtspAcceptanceSummary(payload);
   }
+
 }
 
 function renderMultifileArtifacts(artifacts) {
   const links = [
-    ["tiled MP4", artifacts.tiled_video],
+    ["独立视频索引", artifacts.individual_index],
+    ["合并 MP4（可选）", artifacts.tiled_video],
     ["summary", artifacts.summary],
     ["quality", artifacts.quality],
     ["jsonl", artifacts.jsonl],
+    ["metrics", artifacts.metrics_jsonl],
+    ["recovery", artifacts.recovery_check],
     ["run.log", artifacts.run_log],
   ]
     .filter(([, url]) => Boolean(url))
     .map(([label, url]) => `<a class="btn" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`)
     .join("");
   els.multifileArtifacts.innerHTML = links || '<span class="empty-state">暂无单 Pipeline 输出链接</span>';
+}
+
+function renderIndividualVideos(outputs) {
+  if (!els.multifileIndividualVideos) return;
+  if (!Array.isArray(outputs) || outputs.length === 0) {
+    els.multifileIndividualVideos.innerHTML = '<div class="empty-state">暂无独立推理视频，请先完成带 ENABLE_INDIVIDUAL_OUTPUTS 的验收运行</div>';
+    return;
+  }
+  els.multifileIndividualVideos.innerHTML = outputs
+    .map((item) => `
+      <article class="individual-video-card">
+        <div class="individual-video-head">
+          <strong>${escapeHtml(item.stream_id || "unknown")}</strong>
+          <a href="${escapeHtml(item.video_url)}" target="_blank" rel="noreferrer">打开原视频</a>
+        </div>
+        <video controls preload="metadata" playsinline type="video/mp4" src="${escapeHtml(item.video_url)}"></video>
+      </article>
+    `)
+    .join("");
 }
 
 function renderMultifileTable(streams, streamQuality) {
@@ -840,6 +923,8 @@ function renderMultifileTable(streams, streamQuality) {
 function renderMultifileDetail(payload) {
   const quality = payload.quality || {};
   const summary = payload.summary || {};
+  const runtimeMetrics = payload.runtime_metrics || {};
+  const sourceStatus = payload.source_status || summary.source_status_payload || {};
   const logTail = payload.log_tail || "";
   const messages = [...(quality.failures || []), ...(quality.reviews || [])];
   els.multifileDetail.innerHTML = `
@@ -847,15 +932,94 @@ function renderMultifileDetail(payload) {
       <h3>单 Pipeline 验收</h3>
       <div class="batch-detail-grid">
         <div class="batch-detail-row"><span>模式</span><strong>${escapeHtml(summary.mode || "inprocess_multifile")}</strong></div>
+        <div class="batch-detail-row"><span>RTSP Base</span><strong>${escapeHtml(summary.rtsp_base || "-")}</strong></div>
         <div class="batch-detail-row"><span>质量状态</span><strong>${escapeHtml(quality.quality_status || "unknown")}</strong></div>
         <div class="batch-detail-row"><span>缺失路数</span><strong>${escapeHtml((summary.missing_stream_ids || []).join(", ") || "无")}</strong></div>
         <div class="batch-detail-row"><span>原因</span><strong>${escapeHtml(messages.join("; ") || "无")}</strong></div>
       </div>
     </section>
     <section class="batch-detail-section wide">
+      <h3>Runtime Metrics</h3>
+      <div class="batch-detail-grid">
+        <div class="batch-detail-row"><span>采样时间</span><strong>${escapeHtml(formatTimestamp(runtimeMetrics.timestamp))}</strong></div>
+        <div class="batch-detail-row"><span>运行时长</span><strong>${escapeHtml(formatDuration(runtimeMetrics.elapsed_seconds))}</strong></div>
+        <div class="batch-detail-row"><span>总处理 FPS</span><strong>${escapeHtml(formatNumber(runtimeMetrics.processing_fps, 1))}</strong></div>
+        <div class="batch-detail-row"><span>总帧数</span><strong>${escapeHtml(runtimeMetrics.total_frames ?? "-")}</strong></div>
+        <div class="batch-detail-row"><span>进程内存</span><strong>${escapeHtml(formatBytes((runtimeMetrics.process?.max_rss_kb || 0) * 1024))}</strong></div>
+        <div class="batch-detail-row"><span>CPU 时间</span><strong>${escapeHtml(formatNumber((runtimeMetrics.process?.user_cpu_seconds || 0) + (runtimeMetrics.process?.system_cpu_seconds || 0), 1))}s</strong></div>
+      </div>
+    </section>
+    <section class="batch-detail-section wide">
+      <h3>Source Health</h3>
+      ${renderSourceHealthTable(runtimeMetrics.streams || {}, sourceStatus.streams || [])}
+    </section>
+    <section class="batch-detail-section wide">
       <h3>run.log 摘要</h3>
       <pre class="log-preview">${escapeHtml(logTail || "暂无 run.log 摘要")}</pre>
     </section>
+  `;
+}
+
+function renderSourceHealthTable(runtimeStreams, sourceStreams) {
+  const sourceById = {};
+  (sourceStreams || []).forEach((item) => {
+    const index = Number(item.index);
+    if (Number.isFinite(index) && index > 0) {
+      sourceById[`stream-${index - 1}`] = item;
+    } else {
+      sourceById[item.stream_id] = item;
+    }
+  });
+  const streamIds = Array.from(new Set([
+    ...Object.keys(runtimeStreams || {}),
+    ...Object.keys(sourceById),
+  ])).sort();
+  if (!streamIds.length) {
+    return '<div class="empty-state">暂无 runtime_metrics/source_status 数据</div>';
+  }
+  const rows = streamIds.map((streamId) => {
+    const runtime = runtimeStreams[streamId] || {};
+    const source = sourceById[streamId] || {};
+    const status = runtime.status || source.status || "unknown";
+    return `
+      <tr>
+        <td>${escapeHtml(streamId)}</td>
+        <td><span class="status ${qualityClass(status === "online" ? "passed" : status === "stale" ? "review" : "failed")}">${escapeHtml(status)}</span></td>
+        <td>${escapeHtml(runtime.frame_count ?? "-")}</td>
+        <td>${escapeHtml(runtime.last_frame_id ?? "-")}</td>
+        <td>${escapeHtml(formatNumber(runtime.last_seen_age_seconds, 1))}</td>
+        <td>${escapeHtml(formatFps(runtime.estimated_processing_fps))}</td>
+        <td>${escapeHtml(runtime.stale_count ?? 0)}</td>
+        <td>${escapeHtml(runtime.recovered_count ?? 0)}</td>
+        <td>${escapeHtml(runtime.keepalive_active ? "是" : "否")}</td>
+        <td>${escapeHtml(source.pid ?? "-")}</td>
+        <td>${escapeHtml(source.restart_count ?? 0)}</td>
+        <td title="${escapeHtml(source.last_error || "")}">${escapeHtml(source.last_error || "-")}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="batch-table-wrap">
+      <table class="batch-table">
+        <thead>
+          <tr>
+            <th>stream</th>
+            <th>健康</th>
+            <th>帧数</th>
+            <th>最后帧</th>
+            <th>无帧秒数</th>
+            <th>处理 FPS</th>
+            <th>stale</th>
+            <th>recovered</th>
+            <th>保活</th>
+            <th>pid</th>
+            <th>restart</th>
+            <th>source error</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -917,7 +1081,10 @@ async function refreshBatchDashboard() {
 
 async function refreshMultifileDashboard() {
   try {
-    const response = await fetch("/api/multifile/dashboard");
+    let response = await fetch("/api/rtsp/dashboard");
+    if (!response.ok) {
+      response = await fetch("/api/multifile/dashboard");
+    }
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }

@@ -36,10 +36,18 @@ class DashboardApi:
             return self._multifile_json("multifile_quality.json")
         if path == "/api/multifile/dashboard":
             return self._multifile_dashboard()
+        if path == "/api/rtsp/summary":
+            return self._rtsp_json("rtsp_summary.json")
+        if path == "/api/rtsp/quality":
+            return self._rtsp_json("rtsp_quality.json")
+        if path == "/api/rtsp/dashboard":
+            return self._rtsp_dashboard()
         if path.startswith("/batch-files/"):
             return self._batch_file(path.removeprefix("/batch-files/"))
         if path.startswith("/multifile-files/"):
             return self._multifile_file(path.removeprefix("/multifile-files/"))
+        if path.startswith("/rtsp-files/"):
+            return self._rtsp_file(path.removeprefix("/rtsp-files/"))
         if path in {"/", "/index.html"}:
             return self._static("index.html", "text/html; charset=utf-8")
         if path == "/app.js":
@@ -51,6 +59,9 @@ class DashboardApi:
 
     def multifile_file_response(self, raw_relative_path: str, range_header: str | None = None) -> tuple[int, str, bytes, dict[str, str]]:
         return self._rooted_file_response(self._multifile_dir(), raw_relative_path, range_header)
+
+    def rtsp_file_response(self, raw_relative_path: str, range_header: str | None = None) -> tuple[int, str, bytes, dict[str, str]]:
+        return self._rooted_file_response(self._rtsp_dir(), raw_relative_path, range_header)
 
     def _rooted_file_response(self, root_dir: Path, raw_relative_path: str, range_header: str | None = None) -> tuple[int, str, bytes, dict[str, str]]:
         relative_path = Path(unquote(raw_relative_path))
@@ -119,6 +130,20 @@ class DashboardApi:
         }
         return self._json(payload)
 
+    def _rtsp_dashboard(self) -> tuple[int, str, bytes]:
+        summary = self._read_rtsp_json("rtsp_summary.json")
+        quality = self._read_rtsp_json("rtsp_quality.json")
+        payload = {
+            "rtsp_dir": str(self._rtsp_dir()),
+            "summary": summary,
+            "quality": quality,
+            "artifacts": self._rtsp_artifacts(),
+            "runtime_metrics": self._read_jsonl_last(self._rtsp_dir() / "runtime_metrics.jsonl"),
+            "source_status": self._read_rtsp_json("source_status.json"),
+            "log_tail": self._read_text_tail(self._rtsp_dir() / "run.log", max_lines=80),
+        }
+        return self._json(payload)
+
     def _batch_json(self, name: str) -> tuple[int, str, bytes]:
         path = self._batch_dir() / name
         if not path.exists():
@@ -137,12 +162,25 @@ class DashboardApi:
             )
         return HTTPStatus.OK, "application/json; charset=utf-8", path.read_bytes()
 
+    def _rtsp_json(self, name: str) -> tuple[int, str, bytes]:
+        path = self._rtsp_dir() / name
+        if not path.exists():
+            return self._json(
+                {"error": "rtsp_file_missing", "file": name, "rtsp_dir": str(self._rtsp_dir())},
+                status=HTTPStatus.NOT_FOUND,
+            )
+        return HTTPStatus.OK, "application/json; charset=utf-8", path.read_bytes()
+
     def _batch_file(self, raw_relative_path: str) -> tuple[int, str, bytes]:
         status, content_type, body, _headers = self.batch_file_response(raw_relative_path)
         return status, content_type, body
 
     def _multifile_file(self, raw_relative_path: str) -> tuple[int, str, bytes]:
         status, content_type, body, _headers = self.multifile_file_response(raw_relative_path)
+        return status, content_type, body
+
+    def _rtsp_file(self, raw_relative_path: str) -> tuple[int, str, bytes]:
+        status, content_type, body, _headers = self.rtsp_file_response(raw_relative_path)
         return status, content_type, body
 
     def _parse_range_header(self, range_header: str | None, size: int) -> tuple[int, int] | None:
@@ -174,6 +212,9 @@ class DashboardApi:
     def _multifile_dir(self) -> Path:
         return Path(getattr(self._web_settings, "multifile_dir", Path("outputs/multifile_inproc")))
 
+    def _rtsp_dir(self) -> Path:
+        return Path(getattr(self._web_settings, "rtsp_dir", Path("outputs/rtsp_inproc")))
+
     def _read_batch_json(self, name: str) -> dict:
         path = self._batch_dir() / name
         if not path.exists():
@@ -182,6 +223,12 @@ class DashboardApi:
 
     def _read_multifile_json(self, name: str) -> dict:
         path = self._multifile_dir() / name
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _read_rtsp_json(self, name: str) -> dict:
+        path = self._rtsp_dir() / name
         if not path.exists():
             return {}
         return json.loads(path.read_text(encoding="utf-8"))
@@ -228,12 +275,62 @@ class DashboardApi:
             "quality": "multifile_quality.json",
             "tiled_video": "multifile_preview.mp4",
             "jsonl": "results.jsonl",
+            "metrics_jsonl": "runtime_metrics.jsonl",
             "run_log": "run.log",
         }.items():
             path = self._multifile_dir() / name
             if path.is_file():
                 artifacts[key] = self._multifile_url_for_path(str(path))
         return artifacts
+
+    def _rtsp_artifacts(self) -> dict[str, str]:
+        artifacts: dict[str, str] = {}
+        for key, name in {
+            "summary": "rtsp_summary.json",
+            "quality": "rtsp_quality.json",
+            "tiled_video": "rtsp_preview.mp4",
+            "jsonl": "results.jsonl",
+            "metrics_jsonl": "runtime_metrics.jsonl",
+            "run_log": "run.log",
+            "run_metadata": "run_metadata.json",
+            "source_status": "source_status.json",
+            "recovery_check": "rtsp_recovery_check.json",
+        }.items():
+            path = self._rtsp_dir() / name
+            if path.is_file():
+                artifacts[key] = self._rtsp_url_for_path(str(path))
+        individual_index = self._rtsp_dir() / "individual" / "individual_outputs.json"
+        if individual_index.is_file():
+            artifacts["individual_index"] = self._rtsp_url_for_path(str(individual_index))
+            artifacts["individual_outputs"] = self._individual_video_artifacts(individual_index)
+        return artifacts
+
+    def _individual_video_artifacts(self, index_path: Path) -> list[dict[str, str]]:
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        outputs = payload.get("outputs", []) if isinstance(payload, dict) else []
+        if not isinstance(outputs, list):
+            return []
+        items: list[dict[str, str]] = []
+        for item in outputs:
+            if not isinstance(item, dict) or not item.get("video_exists"):
+                continue
+            raw_video = str(item.get("video", ""))
+            video_url = self._rtsp_url_for_path(raw_video)
+            if not video_url:
+                continue
+            items.append(
+                {
+                    "stream_id": str(item.get("stream_id", "")),
+                    "video": raw_video,
+                    "video_url": video_url,
+                    "jsonl": str(item.get("jsonl", "")),
+                    "run_log": str(item.get("run_log", "")),
+                }
+            )
+        return items
 
     def _batch_url_for_path(self, raw_path: str) -> str:
         path = Path(raw_path)
@@ -255,6 +352,16 @@ class DashboardApi:
             return ""
         return "/multifile-files/" + relative.as_posix()
 
+    def _rtsp_url_for_path(self, raw_path: str) -> str:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        try:
+            relative = path.resolve().relative_to(self._rtsp_dir().resolve())
+        except ValueError:
+            return ""
+        return "/rtsp-files/" + relative.as_posix()
+
     def _read_text_tail(self, path: Path, max_lines: int = 80) -> str:
         if not path.is_absolute():
             path = Path.cwd() / path
@@ -263,6 +370,24 @@ class DashboardApi:
         except OSError:
             return ""
         return "\n".join(lines[-max_lines:])
+
+    def _read_jsonl_last(self, path: Path) -> dict:
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        if not path.is_file():
+            return {}
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return {}
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                return {"error": "invalid_jsonl_tail", "path": str(path)}
+        return {}
 
     def _static(self, name: str, content_type: str) -> tuple[int, str, bytes]:
         path = Path(__file__).resolve().parent / "static" / name
@@ -305,6 +430,11 @@ class DashboardServer:
                         parsed.path.removeprefix("/multifile-files/"),
                         self.headers.get("Range"),
                     )
+                elif parsed.path.startswith("/rtsp-files/"):
+                    status, content_type, body, extra_headers = api.rtsp_file_response(
+                        parsed.path.removeprefix("/rtsp-files/"),
+                        self.headers.get("Range"),
+                    )
                 else:
                     status, content_type, body = api.route(parsed.path, parse_qs(parsed.query))
                 self.send_response(status)
@@ -314,7 +444,10 @@ class DashboardServer:
                     self.send_header(name, value)
                 self.end_headers()
                 if send_body:
-                    self.wfile.write(body)
+                    try:
+                        self.wfile.write(body)
+                    except (BrokenPipeError, ConnectionResetError):
+                        logging.debug("dashboard client disconnected while sending %s", parsed.path)
 
             def log_message(self, format: str, *args) -> None:
                 logging.debug("dashboard %s", format % args)

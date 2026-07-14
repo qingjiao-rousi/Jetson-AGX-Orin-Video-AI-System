@@ -17,6 +17,71 @@
 * 稳定低延迟输出结构化结果
 * 最大化 GPU 利用率与吞吐能力
 
+## ✅ 当前落地验收口径
+
+当前阶段没有真实 RTSP 摄像头资源，因此项目验收采用“本地 MP4 模拟 RTSP 摄像头”的方式作为最终当前版本：
+
+```text
+本地 MP4 文件
+    ↓
+FFmpeg 循环推流
+    ↓
+MediaMTX 提供 8 路 RTSP
+    ↓
+单 Python/DeepStream 进程内多路 pipeline
+    ↓
+nvstreammux batch 推理
+    ↓
+person 检测 / tracker / ROI / 越线 / runtime metrics
+    ↓
+JSONL、summary、quality、UI 展示
+```
+
+这与真实摄像头接入的主链路一致，后续真实落地时主要替换输入源：
+
+```text
+rtsp://127.0.0.1:8555/stream1
+```
+
+替换为真实摄像头：
+
+```text
+rtsp://camera-ip/path
+```
+
+当前一条命令验收入口：
+
+```bash
+RUN_SECONDS=40 START_UI=1 CHECK_RECOVERY=1 scripts/run_production_acceptance.sh
+```
+
+生产验收默认不生成 2x4 合并视频，而是生成每路独立的 OSD 推理视频：
+
+```text
+outputs/production_acceptance_latest/individual/stream_01/stream_01_osd.mp4
+...
+outputs/production_acceptance_latest/individual/stream_08/stream_08_osd.mp4
+```
+
+UI 高级实时调试区会按路分别播放这些视频，用于观察检测框、`track_id`、误检和漏检。若需要合并预览，可显式设置 `ENABLE_TILED_OUTPUT=1 OUTPUT_SINK=file`。
+
+当前质量规则由 `scripts/check_rtsp_inproc_outputs.py` 固化，并输出到：
+
+```text
+outputs/production_acceptance_latest/rtsp_quality.json
+```
+
+主要判定：
+
+* 8 路 RTSP 模拟源全部 online
+* 单 pipeline 正常退出或按运行时长结束
+* `results.jsonl` 非空且无坏 JSON
+* 8 路 stream 均有帧输出
+* runtime metrics 正常写入
+* source health 无异常 stale
+* run.log 无 fatal 错误
+* tegrastats 能提供真实 Jetson GPU / 内存 / 温度 / 功耗指标
+
 # 二、系统整体架构
 
 ```
@@ -292,6 +357,7 @@ DeepStream 的 `nvinfer` 插件并不知道 YOLOv8 的输出格式，因此必�
 * 从 `GstBuffer` 中直接读取 `NvDsBatchMeta`
 * 遍历 frame meta / object meta
 * 提取 `stream_id / frame_id / class_id / confidence / bbox / track_id / timestamp`
+* `track_id` 按 `stream_id` 独立编号，OSD 中每一路视频都会从 `ID:1` 开始；原始 DeepStream 全局 ID 保留为 `global_track_id`
 * 组织成轻量结果结构
 * 交给 Python 非热路径模块消费
 

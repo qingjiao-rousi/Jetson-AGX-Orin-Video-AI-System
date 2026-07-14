@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
 from threading import Event
+import time
 from typing import Any
 
 from app.domain.entities import FrameResult
@@ -18,6 +19,7 @@ class Orchestrator:
     gpu_monitor: object
     fps_controller: object
     backpressure_controller: object
+    runtime_metrics: object | None = None
 
     _stop_event: Event = field(default_factory=Event, init=False, repr=False)
     _started: bool = field(default=False, init=False, repr=False)
@@ -31,15 +33,24 @@ class Orchestrator:
         self.pipeline_manager.clear_error()
         self.pipeline_manager.probes().register_frame_result_handler(self.on_frame_result)
         self.gpu_monitor.start()
+        if hasattr(self.runtime_metrics, "start"):
+            self.runtime_metrics.start()
         self.pipeline_manager.start()
         self._started = True
         self._log_pipeline_summary()
 
-    def run_forever(self) -> None:
+    def run_forever(self, max_runtime_seconds: float | None = None) -> None:
+        deadline = None
+        if max_runtime_seconds is not None and max_runtime_seconds > 0:
+            deadline = time.monotonic() + max_runtime_seconds
         while not self._stop_event.wait(0.2):
-            if hasattr(self.pipeline_manager, "running") and not self.pipeline_manager.running:
+            if deadline is not None and time.monotonic() >= deadline:
                 self._stop_event.set()
                 return
+            if hasattr(self.pipeline_manager, "running") and not self.pipeline_manager.running:
+                if deadline is None:
+                    self._stop_event.set()
+                    return
 
     def stop(self) -> None:
         if self._stop_event.is_set() and not self._started:
@@ -47,6 +58,8 @@ class Orchestrator:
         self._stop_event.set()
         self.pipeline_manager.stop()
         self.gpu_monitor.stop()
+        if hasattr(self.runtime_metrics, "close"):
+            self.runtime_metrics.close()
         self.json_writer.close()
         self._started = False
 
@@ -58,6 +71,11 @@ class Orchestrator:
             self.backpressure_controller.observe(result)
             self.fps_controller.observe(result)
             self.json_writer.write(result)
+            if hasattr(self.runtime_metrics, "observe"):
+                self.runtime_metrics.observe(
+                    result,
+                    gpu_snapshot=self.gpu_monitor.snapshot() if hasattr(self.gpu_monitor, "snapshot") else None,
+                )
             if hasattr(self.backpressure_controller, "mark_consumed"):
                 self.backpressure_controller.mark_consumed()
         except Exception as exc:
@@ -119,6 +137,9 @@ class Orchestrator:
             "bus": self.pipeline_manager.bus_state(),
             "writer": self.json_writer.stats() if hasattr(self.json_writer, "stats") else {},
             "monitor": self.gpu_monitor.snapshot() if hasattr(self.gpu_monitor, "snapshot") else {},
+            "runtime_metrics": self.runtime_metrics.snapshot()
+            if hasattr(self.runtime_metrics, "snapshot")
+            else {},
             "controllers": {
                 "fps": self.fps_controller.stats() if hasattr(self.fps_controller, "stats") else {},
                 "backpressure": self.backpressure_controller.stats()

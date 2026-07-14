@@ -20,6 +20,7 @@ class RuntimeOverrideTests(unittest.TestCase):
                 "\n".join(
                     [
                         "[property]",
+                        "batch-size=1",
                         "cluster-mode=2",
                         "filter-out-class-ids=1;2",
                         "",
@@ -62,6 +63,7 @@ class RuntimeOverrideTests(unittest.TestCase):
             runtime_text = updated.deepstream.infer_config_path.read_text(encoding="utf-8")
             self.assertIn("filter-out-class-ids=1;2;3", runtime_text)
             self.assertIn("pre-cluster-threshold=0.3000", runtime_text)
+            self.assertIn("batch-size=1", runtime_text)
 
     def test_all_classes_comments_person_filter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,6 +102,28 @@ class RuntimeOverrideTests(unittest.TestCase):
                 "pre-cluster-threshold=0.4000",
                 updated.deepstream.infer_config_path.read_text(encoding="utf-8"),
             )
+
+    def test_output_directory_override_configures_all_runtime_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            infer_config = root / "infer.txt"
+            output_dir = root / "run-002"
+            infer_config.write_text("[property]\n", encoding="utf-8")
+            settings = AppSettings(deepstream=DeepStreamSettings(infer_config_path=infer_config))
+
+            updated = apply_runtime_overrides(
+                settings,
+                output_dir=output_dir,
+                output_sink="rtmp",
+                output_url="rtmp://127.0.0.1/live/test",
+            )
+
+            self.assertEqual(updated.output.jsonl_path, output_dir / "results.jsonl")
+            self.assertEqual(updated.output.metrics_jsonl_path, output_dir / "runtime_metrics.jsonl")
+            self.assertEqual(updated.logging.file_path, output_dir / "app.log")
+            self.assertEqual(updated.deepstream.output_video_path, output_dir / "output.mp4")
+            self.assertEqual(updated.deepstream.output_sink, "rtmp")
+            self.assertEqual(updated.deepstream.output_url, "rtmp://127.0.0.1/live/test")
 
 
 if __name__ == "__main__":

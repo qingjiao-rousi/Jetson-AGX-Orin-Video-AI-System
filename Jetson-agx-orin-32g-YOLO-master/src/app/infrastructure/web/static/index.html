@@ -1071,6 +1071,48 @@
       background: #0f172a;
     }
 
+    .individual-video-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .individual-video-card {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .individual-video-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+
+    .individual-video-head a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .individual-video-card video {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border: 0;
+      border-radius: 0;
+    }
+
+    @media (max-width: 900px) {
+      .individual-video-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
     .batch-detail {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1425,7 +1467,7 @@
               <div class="details">
                 <div class="detail-grid">
                   <div class="detail-cell"><label>FPS</label><strong id="detail-fps">-</strong></div>
-                  <div class="detail-cell"><label>延迟 (ms)</label><strong id="detail-latency">-</strong></div>
+                  <div class="detail-cell"><label>最近帧年龄 (ms)</label><strong id="detail-latency">-</strong></div>
                   <div class="detail-cell"><label>检测对象</label><strong id="detail-detections">-</strong></div>
                   <div class="detail-cell"><label>丢帧数</label><strong id="detail-dropped">-</strong></div>
                 </div>
@@ -1439,7 +1481,7 @@
             <div class="panel-head">
               <div>
                 <h2>视频墙 - OSD 输出预览</h2>
-                <span>演示占位视窗，实际部署时接入 RTMP/HLS/WebRTC 实时流</span>
+                <span>每路独立 OSD 推理视频</span>
               </div>
               <span id="video-wall-note">preview mode</span>
             </div>
@@ -1491,7 +1533,7 @@
         <div class="panel-head">
           <div>
             <h2>单 Pipeline 结果看板</h2>
-            <span id="multifile-note">读取 outputs/multifile_inproc/multifile_summary.json 与 multifile_quality.json</span>
+            <span id="multifile-note">优先读取 RTSP 单 Pipeline 结果，也兼容 multifile_summary.json 与 multifile_quality.json</span>
             <div class="artifact-links" id="multifile-artifacts"></div>
           </div>
           <span id="multifile-status" class="status">UNKNOWN</span>
@@ -1526,10 +1568,12 @@
             </table>
           </div>
           <aside class="batch-player">
-            <video id="multifile-video" controls preload="metadata"></video>
+            <div id="multifile-individual-videos" class="individual-video-grid">
+              <div class="empty-state">独立推理视频尚未生成</div>
+            </div>
           </aside>
           <div class="batch-detail" id="multifile-detail">
-            <div class="empty-state">运行 scripts/run_multifile_inproc.sh 后显示单 pipeline 质量和 run.log 摘要</div>
+            <div class="empty-state">运行 scripts/run_rtsp_acceptance.sh 或 scripts/run_multifile_inproc.sh 后显示单 pipeline 质量和 run.log 摘要</div>
           </div>
         </div>
       </section>

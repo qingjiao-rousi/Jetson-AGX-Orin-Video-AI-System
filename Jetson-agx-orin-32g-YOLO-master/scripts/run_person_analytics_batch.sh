@@ -21,9 +21,9 @@ Optional environment overrides:
   CONFIDENCE_THRESHOLD=0.25
 
 Examples:
-  scripts/run_person_analytics_batch.sh /home/nvidia/Desktop/YOLO/video outputs/batch
+  scripts/run_person_analytics_batch.sh "$VIDEO_DIR" "$OUTPUT_ROOT/batch"
 
-  BATCH_JOBS=4 scripts/run_person_analytics_batch.sh /home/nvidia/Desktop/YOLO/video outputs/batch
+  BATCH_JOBS=4 scripts/run_person_analytics_batch.sh "$VIDEO_DIR" "$OUTPUT_ROOT/batch"
 USAGE
 }
 

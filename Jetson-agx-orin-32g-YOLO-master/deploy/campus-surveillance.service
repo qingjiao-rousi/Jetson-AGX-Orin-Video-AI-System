@@ -1,0 +1,21 @@
+[Unit]
+Description=Campus Surveillance DeepStream RTSP Pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+EnvironmentFile=/etc/campus-surveillance/campus-surveillance.env
+WorkingDirectory=@PROJECT_ROOT@
+ExecStart=/usr/bin/env bash @PROJECT_ROOT@/scripts/run_production_service.sh
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=append:@LOG_ROOT@/campus-surveillance.service.log
+StandardError=append:@LOG_ROOT@/campus-surveillance.service.log
+
+[Install]
+WantedBy=multi-user.target

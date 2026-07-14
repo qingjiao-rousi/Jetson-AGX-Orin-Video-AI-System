@@ -61,6 +61,7 @@ def load_settings(config_path: Path) -> AppSettings:
             port=int(web_cfg.get("port", 8080)),
             batch_dir=Path(web_cfg.get("batch_dir", "outputs/batch")),
             multifile_dir=Path(web_cfg.get("multifile_dir", "outputs/multifile_inproc")),
+            rtsp_dir=Path(web_cfg.get("rtsp_dir", "outputs/rtsp_inproc")),
             enable_status_api=bool(web_cfg.get("enable_status_api", True)),
             enable_debug_api=bool(web_cfg.get("enable_debug_api", True)),
             enable_logs_api=bool(web_cfg.get("enable_logs_api", True)),
@@ -74,6 +75,9 @@ def load_settings(config_path: Path) -> AppSettings:
         ),
         output=OutputSettings(
             jsonl_path=Path(output_cfg.get("jsonl_path", "outputs/results.jsonl")),
+            metrics_jsonl_path=Path(output_cfg["metrics_jsonl_path"])
+            if output_cfg.get("metrics_jsonl_path")
+            else None,
             enable_jsonl=bool(output_cfg.get("enable_jsonl", True)),
             enable_mqtt=bool(output_cfg.get("enable_mqtt", False)),
             enable_kafka=bool(output_cfg.get("enable_kafka", False)),
@@ -87,6 +91,8 @@ def load_settings(config_path: Path) -> AppSettings:
             fps_max=float(optimization_cfg.get("fps_max", 30.0)),
             enable_fps_control=bool(optimization_cfg.get("enable_fps_control", True)),
             enable_backpressure=bool(optimization_cfg.get("enable_backpressure", True)),
+            enable_drop_old_frames=bool(optimization_cfg.get("enable_drop_old_frames", True)),
+            stale_after_seconds=float(optimization_cfg.get("stale_after_seconds", 5.0)),
         ),
         deepstream=DeepStreamSettings(
             batch_size=int(deepstream_cfg.get("batch_size", 6)),
@@ -101,6 +107,10 @@ def load_settings(config_path: Path) -> AppSettings:
             tiler_width=int(deepstream_cfg.get("tiler_width", 1280)),
             tiler_height=int(deepstream_cfg.get("tiler_height", 720)),
             output_sink=deepstream_cfg.get("output_sink", "rtmp"),
+            output_url=deepstream_cfg.get(
+                "output_url",
+                "rtmp://127.0.0.1/live/stream",
+            ),
             output_video_path=Path(deepstream_cfg.get("output_video_path", "outputs/person_detect.mp4")),
             model_engine_path=Path(deepstream_cfg.get("model_engine_path", "models/yolov8s.engine")),
             custom_lib_path=Path(
@@ -118,5 +128,9 @@ def load_settings(config_path: Path) -> AppSettings:
             streammux_config_path=Path(
                 deepstream_cfg.get("streammux_config_path", "configs/deepstream/streammux.yaml")
             ),
+            enable_hardware_fallback=bool(deepstream_cfg.get("enable_hardware_fallback", True)),
+            enable_last_frame_keepalive=bool(deepstream_cfg.get("enable_last_frame_keepalive", True)),
+            last_frame_keepalive_timeout_ms=int(deepstream_cfg.get("last_frame_keepalive_timeout_ms", 1000)),
+            encoder_bitrate=int(deepstream_cfg.get("encoder_bitrate", 4000000)),
         ),
     )

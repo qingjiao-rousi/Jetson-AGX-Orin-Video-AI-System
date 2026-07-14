@@ -1,0 +1,16 @@
+@LOG_ROOT@/*.log
+@OUTPUT_ROOT@/*.log
+@OUTPUT_ROOT@/*/*.log
+@OUTPUT_ROOT@/*/*/*.log
+@RUNTIME_ROOT@/*.log
+@RUNTIME_ROOT@/*/*.log
+@RUNTIME_ROOT@/*/*/*.log {
+    daily
+    rotate 7
+    size 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+}

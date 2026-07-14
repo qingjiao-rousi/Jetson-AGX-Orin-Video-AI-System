@@ -16,35 +16,35 @@ web:
 sources:
   - name: local_video_01
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/1.mp4
+    uri: ../video/1.mp4
     enabled: true
   - name: local_video_02
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/2.mp4
+    uri: ../video/2.mp4
     enabled: true
   - name: local_video_03
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/3.mp4
+    uri: ../video/3.mp4
     enabled: true
   - name: local_video_04
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/4.mp4
+    uri: ../video/4.mp4
     enabled: true
   - name: local_video_05
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/5.mp4
+    uri: ../video/5.mp4
     enabled: true
   - name: local_video_06
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/6.mp4
+    uri: ../video/6.mp4
     enabled: true
   - name: local_video_07
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/7.mp4
+    uri: ../video/7.mp4
     enabled: true
   - name: local_video_08
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/8.mp4
+    uri: ../video/8.mp4
     enabled: true
 
 logging:
@@ -81,6 +81,7 @@ deepstream:
   tiler_width: 1280
   tiler_height: 720
   output_sink: file
+  output_url: rtmp://127.0.0.1/live/stream
   output_video_path: outputs/multifile_inproc/multifile_preview.mp4
   model_engine_path: models/yolov8s.engine
   custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so

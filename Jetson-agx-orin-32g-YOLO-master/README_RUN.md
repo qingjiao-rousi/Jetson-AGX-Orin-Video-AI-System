@@ -1,14 +1,31 @@
 # YOLOv8 Person Detection 最小运行指南
 
-本文档说明当前项目的最小可运行版本如何使用、如何验证、输入输出是什么，以及常见问题如何排查。当前目标不是完整多路视频平台，而是先稳定完成一个闭环：
+本文档说明当前项目的统一多路推理程序如何使用、如何验证、输入输出是什么，以及常见问题如何排查。最终任务不是两个互相独立的 demo，而是一套类似 `demo_multhread_decode_infer_mulmodel` 的程序：输入支持本地 MP4/RTSP，输出支持本地 MP4/RTSP/RTMP 和 JSONL。
 
 ```text
-本地 MP4 输入 -> DeepStream YOLOv8 person 检测 -> 带框 MP4 输出 + JSONL 检测结果输出
+本地 MP4 或 RTSP 输入 -> DeepStream YOLOv8 person 检测 -> MP4/RTSP/RTMP 输出 + JSONL 检测结果输出
 ```
 
 ## 1. 当前完成状态
 
+最终任务范围：本地 MP4 和本地 MP4 模拟 RTSP 都是正式验收输入；MP4 和 RTSP/RTMP 都是正式验收输出。四种输入输出组合应由同一套 pipeline 核心支持，真实摄像头不是当前验收前置条件。
+
 当前最小实现已经完成以下能力：
+
+统一运行入口：
+
+```bash
+scripts/run_multistream.sh configs/app/app_multifile_8.yaml outputs/unified_run
+```
+
+输入由 `sources[].kind` 决定，输出由 `deepstream.output_sink` 和 `deepstream.output_url` 决定。也可以临时覆盖输出：
+
+```bash
+OUTPUT_SINK=file scripts/run_multistream.sh CONFIG_PATH OUTPUT_DIR
+OUTPUT_SINK=rtmp OUTPUT_URL=rtmp://127.0.0.1:1935/live/inference scripts/run_multistream.sh CONFIG_PATH OUTPUT_DIR
+```
+
+`run_multifile_inproc.sh` 和 `run_rtsp_inproc.sh` 仍保留验收报告、模拟器和质量检查逻辑，但 pipeline 启动已经复用 `run_multistream.sh`。
 
 - 读取本地 MP4 文件。
 - 使用 DeepStream 7.1 管线执行 YOLOv8s 推理。
@@ -20,6 +37,7 @@
 - 将每帧检测结果写入 JSONL。
 - 启用 DeepStream tracker 后输出 `track_id`。
 - 视频框标签显示 `person ID:<track_id>`。
+- 多路单 pipeline 运行时，`track_id` 是每路视频内部独立编号；不同 `stream_id` 可以同时存在 `track_id=1`。原始 DeepStream 全局 tracker id 保留在 `global_track_id` 中，便于排错。
 - 提供一键运行脚本和一键验收脚本。
 
 关键输出文件：
@@ -818,7 +836,7 @@ python3 scripts/summarize_person_timeline.py \
 - `out_of_order_frames`：倒序帧位置，最多输出前 100 个。
 - `estimated_fps`：根据 JSONL timestamp 估算的结果时间轴 FPS。
 
-注意：当前 timestamp 来自 DeepStream/Python 处理结果时间，而不一定等于原始视频 PTS。它适合作为当前离线处理链路的同步基准。后续接 RTSP、多路摄像头时，需要进一步区分：
+注意：当前 timestamp 来自 DeepStream/Python 处理结果时间，而不一定等于原始视频 PTS。它适合作为当前离线和模拟 RTSP 处理链路的同步基准。后续接真实 RTSP 摄像头时，再进一步区分：
 
 - 源视频 PTS
 - 摄像头 NTP
@@ -945,7 +963,7 @@ ENABLE_TILER=1
 TILER_ROWS=2
 TILER_COLUMNS=4
 TILER_WIDTH=1280
-TILER_HEIGHT=720
+TILER_HEIGHT=640
 ```
 
 也就是说当前单 pipeline 会输出一个 2x4 拼接预览视频，同时输出合并 JSONL。JSONL 中会通过 `stream_id/source_id` 区分每一路输入。
@@ -957,7 +975,8 @@ TILER_HEIGHT=720
 
 本地 UI 已增加“单 Pipeline 结果看板”，会展示：
 
-- `multifile_preview.mp4` tiled 视频。
+- 每个 `stream_id` 对应的独立 OSD 推理视频，可分别播放和检查检测框。
+- 可选的 `multifile_preview.mp4` tiled 视频（仅在显式启用合并输出时生成）。
 - 8 路 stream 统计表。
 - 单 pipeline 质量状态。
 - summary / quality / JSONL / run.log 快捷入口。
@@ -987,16 +1006,31 @@ SOURCE_COUNT=4 scripts/run_multifile_inproc.sh \
 
 ### 14.2 用本地 MP4 模拟 RTSP 拉流
 
-如果当前没有真实 RTSP 摄像头，可以先用本地 MP4 启动一个本地 RTSP 模拟器：
+如果当前没有真实 RTSP 摄像头，推荐使用 MediaMTX + FFmpeg 把本地 MP4 模拟成 8 路 RTSP 摄像头。
+
+依赖：
+
+```bash
+# FFmpeg
+sudo apt install -y ffmpeg
+
+# MediaMTX: 下载 linux_arm64 版本后放到 PATH 中，例如 /usr/local/bin/mediamtx
+# 发布页：https://github.com/bluenviron/mediamtx/releases
+```
+
+启动模拟器：
 
 ```bash
 cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
 source scripts/env.sh
 
-python3 scripts/serve_mp4_as_rtsp.py \
+python3 scripts/manage_mediamtx_sim.py start \
   /home/nvidia/Desktop/YOLO/video \
+  --runtime-dir outputs/rtsp_sim \
   --limit 8 \
-  --port 8554
+  --mount-prefix stream \
+  --rtsp-port 8554 \
+  --force
 ```
 
 它会暴露：
@@ -1008,12 +1042,41 @@ rtsp://127.0.0.1:8554/stream2
 rtsp://127.0.0.1:8554/stream8
 ```
 
+查看模拟器状态：
+
+```bash
+python3 scripts/manage_mediamtx_sim.py status --runtime-dir outputs/rtsp_sim
+```
+
+状态文件：
+
+```text
+outputs/rtsp_sim/source_status.json
+```
+
+停止模拟器：
+
+```bash
+python3 scripts/manage_mediamtx_sim.py stop --runtime-dir outputs/rtsp_sim
+```
+
+兼容旧入口：
+
+```bash
+scripts/simulate_cameras.sh /home/nvidia/Desktop/YOLO/video --limit 8
+scripts/simulate_cameras.sh --status
+scripts/simulate_cameras.sh --stop
+```
+
 然后在另一个终端运行单进程 RTSP 拉流入口：
 
 ```bash
 cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
 source scripts/env.sh
 
+RTSP_BASE=rtsp://127.0.0.1:8554/stream \
+SOURCE_COUNT=8 \
+OUTPUT_SINK=file \
 scripts/run_rtsp_inproc.sh outputs/rtsp_inproc
 ```
 
@@ -1028,8 +1091,10 @@ outputs/rtsp_inproc/.runtime/app_rtsp_runtime.yaml
 注意：
 
 - MP4 转 RTSP 是为了模拟真实摄像头的 live-source、网络拉流、延迟和动态 pad。
+- `manage_mediamtx_sim.py` 使用 FFmpeg `-re -stream_loop -1 -c:v copy -an`，默认按实时速度循环推流，且不重新编码。
+- 某一路 FFmpeg 推流异常退出后，管理器会标记 `reconnecting` 并自动重启。
 - 如果只是为了验证单进程多路合批，优先使用 `scripts/run_multifile_inproc.sh`，不必先转 RTSP。
-- RTMP 推流需要本机或局域网中存在 RTMP server，例如 nginx-rtmp 或 MediaMTX。当前优先验证 RTSP 拉流和单进程合批，RTMP 输出放到后续视频输出阶段处理。
+- MediaMTX 同时提供 RTMP、WebRTC、HLS 能力；当前任务要求先完成 RTSP 拉流和 MP4/RTSP/RTMP 输出验收，WebRTC/HLS 属于浏览器预览扩展。
 
 默认匹配：
 
@@ -1451,6 +1516,21 @@ rm -f models/yolov8s.engine
   --fp16
 ```
 
+8 路实时推理应使用动态 batch 1..8 的 engine。推荐在当前 AGX Orin 上执行项目脚本：
+
+```bash
+cd /home/nvidia/Desktop/YOLO/Jetson-agx-orin-32g-YOLO-master
+source scripts/env.sh
+scripts/build_yolov8s_engine_batch8.sh
+```
+
+该脚本将生成 FP16 batch-8 engine，并在成功后将旧 engine 备份为
+`models/yolov8s.engine.before_batch8`。如果 ONNX 输入名不是 `input`，可指定：
+
+```bash
+INPUT_NAME=<实际输入名> scripts/build_yolov8s_engine_batch8.sh
+```
+
 观察进程：
 
 ```bash
@@ -1516,7 +1596,7 @@ cp /home/nvidia/Desktop/YOLO/export_yolov8_ds/labels.txt models/labels.txt
 
 ## 20. 项目完成度与后续路线
 
-当前项目已经进入 **离线批量验收版本基本完成** 阶段。按当前目标“本地 8 个 MP4 输入、本地 MP4 输出、person JSONL 输出、批量统计和 UI 查看结果”来评估，完成度约为 **75% 到 80%**。
+当前项目处于 **统一多路推理闭环完善阶段**。核心代码已经具备 file/RTSP 输入和主要输出节点，但输入输出组合验收、输出稳定性、断流恢复和质量规则仍未全部完成。详细任务见 `projectMd/最终任务定义与改造计划.md`。
 
 已经完成的核心闭环：
 
@@ -1689,14 +1769,14 @@ scripts/run_acceptance_ui.sh /path/to/long_video_dir outputs/acceptance_long
 目标：
 
 ```text
-把当前离线 MP4 能力迁移到真实摄像头输入。
+把统一 file/模拟 RTSP 能力扩展到真实摄像头输入。
 ```
 
 当前决定：
 
-RTSP/RTMP 先保留代码方向，但不作为当前阶段优先实现。等离线批量、多路性能和质量规则稳定后再做。
+RTSP/RTMP 是当前正式任务范围；真实摄像头接入不作为当前验收前置条件。
 
-如果暂时跳过长视频稳定性测试，那么下一个推荐节点不是直接接真实摄像头，而是先做：
+当前应先完成统一 file/模拟 RTSP 的组合验收，再把真实摄像头作为可选扩展：
 
 ```text
 本地 MP4 -> 本地 RTSP 模拟器 -> 单进程 DeepStream RTSP 拉流
@@ -1706,12 +1786,11 @@ RTSP/RTMP 先保留代码方向，但不作为当前阶段优先实现。等离�
 
 建议方案：
 
-1. 如果没有真实摄像头，先用 `scripts/serve_mp4_as_rtsp.py` 把本地 MP4 暴露成 `rtsp://127.0.0.1:8554/stream1..8`。
+1. 用 `scripts/manage_mediamtx_sim.py` 把本地 MP4 暴露成 8 路 RTSP。
 2. 用 `scripts/run_rtsp_inproc.sh` 验证单进程 8 路 RTSP 拉流。
-3. 再接 1 路真实 RTSP 摄像头。
+3. 分别验证 MP4 输出和 RTSP/RTMP 输出。
 4. 处理断流重连、网络抖动、延迟和时间戳。
-5. 再扩展到多路真实 RTSP。
-6. 最后考虑是否需要 RTMP/HLS/WebRTC 预览输出。
+5. 再将真实 RTSP 摄像头作为可选输入扩展。
 
 验收标准：
 
@@ -1879,23 +1958,26 @@ MP4 模拟 RTSP 的真实时序和循环重连
 建议先实现脚本层能力：
 
 ```text
-scripts/serve_mp4_as_rtsp_loop.py
+scripts/manage_mediamtx_sim.py
+scripts/simulate_cameras.sh
 scripts/run_rtsp_inproc.sh
 ```
 
 验收命令目标：
 
 ```bash
-python3 scripts/serve_mp4_as_rtsp_loop.py \
-  --input-dir /home/nvidia/Desktop/YOLO/video \
-  --host 127.0.0.1 \
-  --port 8554 \
-  --loop \
-  --realtime
+python3 scripts/manage_mediamtx_sim.py start \
+  /home/nvidia/Desktop/YOLO/video \
+  --runtime-dir outputs/rtsp_sim \
+  --limit 8 \
+  --rtsp-port 8554 \
+  --mount-prefix stream \
+  --force
 
-scripts/run_rtsp_inproc.sh \
-  rtsp://127.0.0.1:8554 \
-  outputs/rtsp_inproc
+RTSP_BASE=rtsp://127.0.0.1:8554/stream \
+SOURCE_COUNT=8 \
+OUTPUT_SINK=file \
+scripts/run_rtsp_inproc.sh outputs/rtsp_inproc
 ```
 
 验收标准：
@@ -1905,6 +1987,94 @@ scripts/run_rtsp_inproc.sh \
 - `outputs/rtsp_inproc/results.jsonl` 中出现 `stream-0..stream-7`。
 - 关闭某一路模拟器后，状态能变为 reconnecting 或 failed。
 - 恢复该路后，状态能重新变为 online。
+
+### 20.5.3 RTSP 韧性策略
+
+当前 RTSP 单 Pipeline 已加入四类落地前韧性策略：
+
+1. 长队列 + 丢旧帧
+
+实时队列默认使用有界队列，并在积压时丢弃旧帧，避免某一路或输出端变慢后拖垮整条 pipeline。
+
+```bash
+ENABLE_DROP_OLD_FRAMES=1
+```
+
+对应 GStreamer queue 策略：
+
+```text
+max-size-buffers=32
+max-size-time=0
+max-size-bytes=0
+leaky=downstream
+```
+
+2. 超时保活最后一帧
+
+当前阶段先在运行时状态层落地：当某路超过阈值没有新帧时，`runtime_metrics.jsonl` 会保留最后帧信息并标记：
+
+```text
+keepalive_active=true
+last_frame_id
+last_seen_at
+last_keepalive_at
+```
+
+运行开关：
+
+```bash
+ENABLE_LAST_FRAME_KEEPALIVE=1
+LAST_FRAME_KEEPALIVE_TIMEOUT_MS=1000
+STALE_AFTER_SECONDS=5
+```
+
+后续接 RTMP/WebRTC/RTSP 输出线程时，可以直接使用该状态复用最后一帧保持输出连接活跃。
+
+3. 硬件路径失败 fallback
+
+当 `file` 或 `rtmp` 输出链路中的硬件编码/封装路径在构建或 PLAYING 阶段失败时，pipeline 会尝试降级到 `fakesink`，优先保证推理、JSONL、metrics 继续输出。
+
+```bash
+ENABLE_HARDWARE_FALLBACK=1
+```
+
+这不会伪装生成视频文件；如果 fallback 发生，应以 `run.log`、`runtime_flags.fallback_output_sink` 和缺失的 MP4 输出作为排查依据。
+
+4. DeepStream 内部 RTSP 重连策略
+
+RTSP source 默认启用 TCP、keepalive、重试和超时参数：
+
+```text
+protocols=tcp
+do-rtsp-keep-alive=true
+retry=5
+timeout=5s
+tcp-timeout=5s
+drop-on-latency=true
+```
+
+对于 live RTSP，pipeline bus 收到单路 EOS 或典型网络读失败时不会立刻停掉整条 pipeline，而是记录 warning，让 source 重连、MediaMTX 模拟器恢复和 `runtime_metrics.jsonl` 的 stale/recovered 状态接管。
+
+建议验收命令：
+
+```bash
+OUTPUT_SINK=fake \
+RUN_SECONDS=60 \
+CHECK_RECOVERY=1 \
+ENABLE_DROP_OLD_FRAMES=1 \
+ENABLE_HARDWARE_FALLBACK=1 \
+ENABLE_LAST_FRAME_KEEPALIVE=1 \
+scripts/run_rtsp_acceptance.sh /home/nvidia/Desktop/YOLO/video outputs/rtsp_acceptance_latest
+```
+
+重点查看：
+
+```text
+outputs/rtsp_acceptance_latest/runtime_metrics.jsonl
+outputs/rtsp_acceptance_latest/rtsp_recovery_check.json
+outputs/rtsp_acceptance_latest/rtsp_quality.json
+outputs/rtsp_acceptance_latest/run.log
+```
 
 ### 20.6 服务化与部署收口
 
@@ -1924,12 +2094,178 @@ scripts/run_rtsp_inproc.sh \
 - 固定配置文件和模型路径。
 - 固定 Jetson 环境依赖版本。
 
+当前项目已经提供生产化部署骨架：
+
+```text
+deploy/campus-surveillance.env
+deploy/campus-surveillance.service
+deploy/campus-surveillance-cleanup.service
+deploy/campus-surveillance-cleanup.timer
+deploy/logrotate/campus-surveillance
+scripts/project_paths.sh
+scripts/run_production_service.sh
+scripts/install_systemd_service.sh
+scripts/cleanup_outputs.sh
+```
+
+安装 systemd 服务：
+
+```bash
+cd /path/to/Jetson-agx-orin-32g-YOLO-master
+
+sudo -E scripts/install_systemd_service.sh
+```
+
+安装后配置文件位于：
+
+```text
+/etc/campus-surveillance/campus-surveillance.env
+```
+
+常用配置：
+
+```text
+VIDEO_DIR=/path/to/video
+OUTPUT_ROOT=/path/to/project/outputs
+RUNTIME_ROOT=/path/to/project/.runtime
+LOG_ROOT=/path/to/project/outputs/logs
+SOURCE_COUNT=8
+RTSP_PORT=8555
+START_SIMULATOR=1
+START_UI=1
+OUTPUT_SINK=fake
+RUN_SECONDS=0
+ENABLE_TEGRASTATS=1
+TEGRASTATS_INTERVAL_MS=1000
+RETENTION_DAYS=7
+MAX_OUTPUT_GB=20
+```
+
+启动、停止、开机自启：
+
+```bash
+sudo systemctl start campus-surveillance
+sudo systemctl status campus-surveillance
+sudo systemctl stop campus-surveillance
+sudo systemctl enable campus-surveillance
+```
+
+清理定时器：
+
+```bash
+sudo systemctl enable --now campus-surveillance-cleanup.timer
+systemctl list-timers | grep campus-surveillance
+```
+
+手动清理输出目录：
+
+```bash
+DRY_RUN=1 scripts/cleanup_outputs.sh
+scripts/cleanup_outputs.sh
+```
+
+日志轮转配置：
+
+```text
+/etc/logrotate.d/campus-surveillance
+```
+
+手动验证 logrotate：
+
+```bash
+sudo logrotate -d /etc/logrotate.d/campus-surveillance
+```
+
 验收标准：
 
 - 重启 Jetson 后服务能自动启动。
 - UI 能访问最新结果。
 - 错误日志可追踪。
 - 输出文件不会无限增长占满磁盘。
+
+### 20.6.1 当前最终端到端验收
+
+当前没有真实 RTSP 摄像头时，项目的端到端验收定义为：
+
+```text
+本地 MP4 目录
+  -> MediaMTX + FFmpeg 模拟 8 路 RTSP 摄像头
+  -> 单 Python/DeepStream 进程内 nvstreammux 批处理
+  -> YOLOv8 TensorRT 推理 + tracker
+  -> JSONL / runtime_metrics / rtsp_summary / rtsp_quality
+  -> 本地 UI 展示本次验收结果
+```
+
+一条命令运行当前生产验收：
+
+```bash
+cd /path/to/Jetson-agx-orin-32g-YOLO-master
+
+RUN_SECONDS=60 \
+OUTPUT_SINK=file \
+START_UI=1 \
+CHECK_RECOVERY=1 \
+scripts/run_production_acceptance.sh
+```
+
+生产验收默认同时保留两类视频输出：
+
+- `rtsp_preview.mp4`：8 路合并后的 2x4 预览视频；
+- `individual/stream_01/stream_01_osd.mp4` 到 `individual/stream_08/stream_08_osd.mp4`：每路独立 OSD 视频；
+- `individual/individual_outputs.json`：逐路视频、JSONL 和日志索引。
+
+逐路视频由独立的单路 pipeline 编码生成，合并视频仍由 8 路单 pipeline 生成。若只需要合并视频，可设置 `ENABLE_INDIVIDUAL_OUTPUTS=0`；若 Jetson 资源紧张，可降低并行任务数：
+
+```bash
+ENABLE_INDIVIDUAL_OUTPUTS=1 INDIVIDUAL_JOBS=1 \
+scripts/run_production_acceptance.sh
+```
+
+输出目录默认是：
+
+```text
+$OUTPUT_ROOT/production_acceptance_latest
+```
+
+核心输出：
+
+```text
+rtsp_summary.json        # 8 路汇总、帧数、检测数、track 数、输入源状态
+rtsp_quality.json        # passed / review / failed 质量判定
+runtime_metrics.jsonl    # 处理 FPS、source health、stale/recovered、tegrastats
+results.jsonl            # 每帧结构化检测和跟踪结果
+run.log                  # DeepStream / GStreamer 运行日志
+source_status.json       # MediaMTX/FFmpeg 模拟摄像头在线状态
+```
+
+`rtsp_quality.json` 的规则已经固定在脚本里，并会随结果一起输出。默认判定重点：
+
+- `run_status=ok` 且进程退出码为 0。
+- 8 路 source 全部 online。
+- 8 路 stream 都出现在 `results.jsonl`。
+- `results.jsonl` 非空且无 malformed JSON。
+- 每路都有帧，且估算 FPS 不低于 `MIN_FPS`。
+- `runtime_metrics.jsonl` 至少有 `MIN_METRIC_SAMPLES` 条。
+- stale 次数不超过 `MAX_STALE_COUNT`。
+- `run.log` 没有 `Traceback`、PLAYING 失败等 fatal 日志。
+
+可调阈值：
+
+```bash
+MIN_FPS=1.0
+MIN_METRIC_SAMPLES=1
+MAX_STALE_COUNT=0
+REQUIRE_PERSON=0
+```
+
+真实 Jetson 指标来自 `tegrastats`：
+
+```bash
+ENABLE_TEGRASTATS=1
+TEGRASTATS_INTERVAL_MS=1000
+```
+
+如果当前系统没有 `tegrastats`，验收不会直接失败，但 `rtsp_quality.json` 会进入 `review`，提示 GPU 指标不可用。
 
 ### 20.7 最终交付文档
 

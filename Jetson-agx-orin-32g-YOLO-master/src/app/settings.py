@@ -12,6 +12,7 @@ class WebSettings:
     port: int = 8080
     batch_dir: Path = Path("outputs/batch")
     multifile_dir: Path = Path("outputs/multifile_inproc")
+    rtsp_dir: Path = Path("outputs/rtsp_inproc")
     enable_status_api: bool = True
     enable_debug_api: bool = True
     enable_logs_api: bool = True
@@ -29,6 +30,7 @@ class LoggingSettings:
 @dataclass(frozen=True)
 class OutputSettings:
     jsonl_path: Path = Path("outputs/results.jsonl")
+    metrics_jsonl_path: Path | None = None
     enable_jsonl: bool = True
     enable_mqtt: bool = False
     enable_kafka: bool = False
@@ -44,6 +46,8 @@ class OptimizationSettings:
     fps_max: float = 30.0
     enable_fps_control: bool = True
     enable_backpressure: bool = True
+    enable_drop_old_frames: bool = True
+    stale_after_seconds: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -67,13 +71,18 @@ class DeepStreamSettings:
     tiler_columns: int = 4
     tiler_width: int = 1280
     tiler_height: int = 720
-    output_sink: Literal["rtmp", "fake", "file"] = "rtmp"
+    output_sink: Literal["rtmp", "rtsp", "fake", "file"] = "rtmp"
+    output_url: str = "rtmp://127.0.0.1/live/stream"
     output_video_path: Path = Path("outputs/person_detect.mp4")
     model_engine_path: Path = Path("models/yolov8s.engine")
     custom_lib_path: Path = Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so")
     tracker_config_path: Path = Path("configs/deepstream/tracker_iou.yml")
     infer_config_path: Path = Path("configs/deepstream/infer_primary_yolo.txt")
     streammux_config_path: Path = Path("configs/deepstream/streammux.yaml")
+    enable_hardware_fallback: bool = True
+    enable_last_frame_keepalive: bool = True
+    last_frame_keepalive_timeout_ms: int = 1000
+    encoder_bitrate: int = 4000000
 
 
 @dataclass(frozen=True)
@@ -102,6 +111,10 @@ class AppSettings:
             raise ValueError("deepstream.batch_size must be greater than zero")
         if self.deepstream.inference_width <= 0 or self.deepstream.inference_height <= 0:
             raise ValueError("deepstream inference size must be greater than zero")
+        if self.deepstream.output_sink not in {"fake", "file", "rtmp", "rtsp"}:
+            raise ValueError(f"unsupported output sink: {self.deepstream.output_sink}")
+        if self.deepstream.output_sink in {"rtmp", "rtsp"} and not self.deepstream.output_url:
+            raise ValueError("deepstream.output_url is required for stream output")
         if self.deepstream.enable_tiler:
             if self.deepstream.tiler_rows <= 0 or self.deepstream.tiler_columns <= 0:
                 raise ValueError("deepstream tiler rows/columns must be greater than zero")

@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from threading import Event
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +42,35 @@ class JsonWriterTests(unittest.TestCase):
         self.assertEqual(payload["timestamp"], "2026-07-09T08:30:00+00:00")
         self.assertEqual(payload["extra"]["source_timestamp"], "2026-07-09T08:31:00+00:00")
         self.assertEqual(payload["detections"][0]["bbox"]["width"], 3)
+
+    def test_writer_drops_oldest_when_queue_is_full(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "results.jsonl"
+            writer = JsonWriter(output_path, queue_size=1)
+            started = Event()
+            release = Event()
+            original_write_item = writer._write_item
+
+            def blocked_write_item(result) -> None:
+                started.set()
+                release.wait(timeout=2)
+                original_write_item(result)
+
+            writer._write_item = blocked_write_item
+            writer.write(FrameResult("stream-0", 1, datetime.now(timezone.utc)))
+            self.assertTrue(started.wait(timeout=2))
+            writer.write(FrameResult("stream-0", 2, datetime.now(timezone.utc)))
+            writer.write(FrameResult("stream-0", 3, datetime.now(timezone.utc)))
+            release.set()
+            writer.close()
+
+            stats = writer.stats()
+            rows = output_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(stats["dropped"], 1)
+        self.assertEqual(stats["lines_written"], 2)
+        self.assertEqual([json.loads(row)["frame_id"] for row in rows], [1, 3])
+        self.assertFalse(stats["worker_alive"])
 
 
 if __name__ == "__main__":

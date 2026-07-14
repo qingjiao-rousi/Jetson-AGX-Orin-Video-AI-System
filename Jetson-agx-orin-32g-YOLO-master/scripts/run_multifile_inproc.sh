@@ -18,6 +18,7 @@ Optional environment overrides:
   VIDEO_GLOB=*.mp4
   SOURCE_COUNT=8
   OUTPUT_SINK=file
+  OUTPUT_URL=rtmp://127.0.0.1/live/stream
   OUTPUT_WIDTH=640
   OUTPUT_HEIGHT=640
   ENABLE_TILER=1
@@ -26,6 +27,7 @@ Optional environment overrides:
   TILER_WIDTH=1280
   TILER_HEIGHT=720
   CONFIDENCE_THRESHOLD=0.25
+  ENCODER_BITRATE=12000000
 
 Notes:
   - Default OUTPUT_SINK=file writes a single tiled MP4 preview plus JSONL.
@@ -33,9 +35,9 @@ Notes:
   - Each record contains stream_id/source_id so the 8 inputs can be separated.
 
 Examples:
-  scripts/run_multifile_inproc.sh /home/nvidia/Desktop/YOLO/video outputs/multifile_inproc
+  scripts/run_multifile_inproc.sh "$VIDEO_DIR" "$OUTPUT_ROOT/multifile_inproc"
 
-  SOURCE_COUNT=4 scripts/run_multifile_inproc.sh /home/nvidia/Desktop/YOLO/video outputs/multifile_4
+  SOURCE_COUNT=4 scripts/run_multifile_inproc.sh "$VIDEO_DIR" "$OUTPUT_ROOT/multifile_4"
 USAGE
 }
 
@@ -49,6 +51,7 @@ OUTPUT_DIR="${2:-outputs/multifile_inproc}"
 VIDEO_GLOB="${VIDEO_GLOB:-*.mp4}"
 SOURCE_COUNT="${SOURCE_COUNT:-8}"
 OUTPUT_SINK="${OUTPUT_SINK:-file}"
+OUTPUT_URL="${OUTPUT_URL:-rtmp://127.0.0.1/live/stream}"
 OUTPUT_WIDTH="${OUTPUT_WIDTH:-640}"
 OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-640}"
 ENABLE_TILER="${ENABLE_TILER:-1}"
@@ -57,6 +60,7 @@ TILER_COLUMNS="${TILER_COLUMNS:-4}"
 TILER_WIDTH="${TILER_WIDTH:-1280}"
 TILER_HEIGHT="${TILER_HEIGHT:-720}"
 CONFIDENCE_THRESHOLD="${CONFIDENCE_THRESHOLD:-0.25}"
+ENCODER_BITRATE="${ENCODER_BITRATE:-12000000}"
 
 if [ ! -d "$INPUT_DIR" ]; then
     echo "Input video directory not found: $INPUT_DIR" >&2
@@ -66,8 +70,8 @@ if ! [[ "$SOURCE_COUNT" =~ ^[0-9]+$ ]] || [ "$SOURCE_COUNT" -lt 1 ]; then
     echo "SOURCE_COUNT must be a positive integer: $SOURCE_COUNT" >&2
     exit 1
 fi
-if [ "$OUTPUT_SINK" != "fake" ] && [ "$OUTPUT_SINK" != "file" ] && [ "$OUTPUT_SINK" != "rtmp" ]; then
-    echo "OUTPUT_SINK must be one of: fake, file, rtmp" >&2
+if [ "$OUTPUT_SINK" != "fake" ] && [ "$OUTPUT_SINK" != "file" ] && [ "$OUTPUT_SINK" != "rtmp" ] && [ "$OUTPUT_SINK" != "rtsp" ]; then
+    echo "OUTPUT_SINK must be one of: fake, file, rtmp, rtsp" >&2
     exit 1
 fi
 
@@ -157,12 +161,14 @@ deepstream:
   tiler_width: $TILER_WIDTH
   tiler_height: $TILER_HEIGHT
   output_sink: $OUTPUT_SINK
+  output_url: $OUTPUT_URL
   output_video_path: $OUTPUT_DIR/multifile_preview.mp4
   model_engine_path: models/yolov8s.engine
   custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
   tracker_config_path: configs/deepstream/tracker_iou.yml
   infer_config_path: configs/deepstream/infer_primary_yolo_minimal.txt
   streammux_config_path: configs/deepstream/streammux.yaml
+  encoder_bitrate: $ENCODER_BITRATE
 YAML
 
 rm -f "$JSONL_PATH" "$LOG_PATH" "$RUN_METADATA_PATH" "$OUTPUT_DIR/multifile_preview.mp4" "$SUMMARY_PATH" "$QUALITY_PATH"
@@ -184,11 +190,13 @@ source scripts/env.sh
 
 started_at="$(date --iso-8601=seconds)"
 set +e
-PYTHONPATH=src python3 -m app.main \
-    --config "$CONFIG_PATH" \
-    --no-web \
-    --confidence-threshold "$CONFIDENCE_THRESHOLD" \
-    --runtime-dir "$RUNTIME_INFER_DIR" \
+OUTPUT_SINK="$OUTPUT_SINK" \
+OUTPUT_URL="$OUTPUT_URL" \
+OUTPUT_VIDEO_PATH="$OUTPUT_DIR/multifile_preview.mp4" \
+RUNTIME_DIR="$RUNTIME_INFER_DIR" \
+CONFIDENCE_THRESHOLD="$CONFIDENCE_THRESHOLD" \
+RUN_SECONDS=0 \
+scripts/run_multistream.sh "$CONFIG_PATH" "$OUTPUT_DIR" \
     >"$LOG_PATH" 2>&1
 app_exit=$?
 set -e

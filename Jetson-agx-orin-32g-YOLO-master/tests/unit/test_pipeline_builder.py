@@ -240,6 +240,60 @@ class PipelineBuilderRuntimeTests(unittest.TestCase):
             self.assertIn(("tiler", "pre-osd-convert"), blueprint.links)
             self.assertEqual(blueprint.probes, (("tiler", "sink"),))
 
+    def test_rtsp_output_uses_h264_payloader_and_configured_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "sample.mp4"
+            sample.write_bytes(b"sample")
+            settings = AppSettings(
+                app_name="deepstream-rtsp-output",
+                source_count=1,
+                sources=(SourceSettings(name="local", uri=str(sample), kind="file", enabled=True),),
+                logging=LoggingSettings(),
+                output=OutputSettings(enable_jsonl=True),
+                optimization=OptimizationSettings(),
+                deepstream=DeepStreamSettings(
+                    batch_size=1,
+                    output_sink="rtsp",
+                    output_url="rtsp://127.0.0.1:8554/inference",
+                    model_engine_path=Path("models/yolov8s.engine"),
+                    custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
+                    tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
+                    infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
+                    streammux_config_path=Path("configs/deepstream/streammux.yaml"),
+                ),
+            )
+
+            blueprint = PipelineBuilder(settings).build()
+            nodes = {node.name: node for node in blueprint.nodes}
+
+            self.assertEqual(nodes["sink"].element, "rtspclientsink")
+            self.assertEqual(nodes["sink"].properties["location"], "rtsp://127.0.0.1:8554/inference")
+            self.assertEqual(nodes["rtsp-pay"].element, "rtph264pay")
+            self.assertIn(("h264-parser", "rtsp-pay"), blueprint.links)
+            self.assertIn(("rtsp-pay", "sink"), blueprint.links)
+
+    def test_rtmp_output_uses_configured_url(self) -> None:
+        settings = AppSettings(
+            app_name="deepstream-rtmp-output",
+            source_count=1,
+            sources=(SourceSettings(name="cam", uri="rtsp://127.0.0.1:8554/stream1", kind="rtsp", enabled=True),),
+            logging=LoggingSettings(),
+            output=OutputSettings(enable_jsonl=True),
+            optimization=OptimizationSettings(),
+            deepstream=DeepStreamSettings(
+                batch_size=1,
+                output_sink="rtmp",
+                output_url="rtmp://127.0.0.1:1935/live/inference",
+            ),
+        )
+
+        blueprint = PipelineBuilder(settings).build()
+        nodes = {node.name: node for node in blueprint.nodes}
+
+        self.assertEqual(nodes["sink"].element, "rtmpsink")
+        self.assertEqual(nodes["sink"].properties["location"], "rtmp://127.0.0.1:1935/live/inference")
+        self.assertEqual(nodes["output-mux"].element, "flvmux")
+
 
 if __name__ == "__main__":
     unittest.main()

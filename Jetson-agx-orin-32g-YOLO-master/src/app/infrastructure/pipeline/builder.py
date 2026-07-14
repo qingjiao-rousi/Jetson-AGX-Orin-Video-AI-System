@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import logging
 
+from app.domain.entities import canonical_stream_id
 from app.infrastructure.pipeline.source_factory import SourceBranchSpec, SourceFactory, SourceSpec
 
 UNTRACKED_OBJECT_ID = 0xFFFFFFFFFFFFFFFF
@@ -120,6 +121,9 @@ class PipelineBuilder:
         self.settings = settings
         self._runtime_factory = GStreamerRuntimeFactory()
         self._probe_warning_counts: dict[str, int] = {}
+        self._forced_output_sink: str | None = None
+        self._stream_track_id_maps: dict[int, dict[int, int]] = {}
+        self._stream_next_track_ids: dict[int, int] = {}
 
     def build(self) -> PipelineBlueprint:
         self.settings.validate()
@@ -179,6 +183,36 @@ class PipelineBuilder:
             logging.warning("GStreamer runtime is not available in the current environment")
             return runtime
 
+        try:
+            return self._assemble_runtime(runtime, blueprint)
+        except RuntimeError as exc:
+            if not self._should_fallback_to_fake_output(exc):
+                raise
+            logging.warning("output hardware path failed, falling back to fakesink: %s", exc)
+            self._forced_output_sink = "fake"
+            blueprint = self.build()
+            runtime = {
+                **runtime,
+                "blueprint": blueprint,
+                "static_links": blueprint.links,
+                "dynamic_links": self._build_dynamic_links(blueprint),
+                "runtime_flags": self._build_runtime_flags(blueprint),
+                "probe_points": blueprint.probes,
+            }
+            return self._assemble_runtime(runtime, blueprint)
+
+    def build_runtime_with_fake_output(self) -> dict[str, Any]:
+        if not bool(getattr(self.settings.deepstream, "enable_hardware_fallback", True)):
+            raise RuntimeError("hardware fallback is disabled")
+        if getattr(self.settings.deepstream, "output_sink", "rtmp") == "fake":
+            raise RuntimeError("output sink is already fake")
+        self._forced_output_sink = "fake"
+        return self.build_runtime()
+
+    def has_output_fallback_active(self) -> bool:
+        return self._forced_output_sink == "fake"
+
+    def _assemble_runtime(self, runtime: dict[str, Any], blueprint: PipelineBlueprint) -> dict[str, Any]:
         runtime["pipeline"] = self._runtime_factory.create_pipeline(blueprint.app_name)
         runtime["elements"] = self._runtime_factory.create_elements(blueprint)
         self.add_elements_to_pipeline(runtime)
@@ -188,13 +222,37 @@ class PipelineBuilder:
         runtime["probe_attachments"] = self.attach_probe_points(runtime)
         return runtime
 
+    def _should_fallback_to_fake_output(self, exc: RuntimeError) -> bool:
+        if not (
+            bool(getattr(self.settings.deepstream, "enable_hardware_fallback", True))
+            and self._forced_output_sink is None
+            and getattr(self.settings.deepstream, "output_sink", "rtmp") != "fake"
+        ):
+            return False
+        text = str(exc)
+        output_markers = (
+            "post-osd-convert",
+            "encoder-caps",
+            "encoder",
+            "nvv4l2h264enc",
+            "h264-parser",
+            "output-mux",
+            "qtmux",
+            "flvmux",
+            "filesink",
+            "rtmpsink",
+            "sink",
+        )
+        return any(marker in text for marker in output_markers)
+
     def _build_nodes(self, branches: tuple[SourceBranchSpec, ...]) -> tuple[PipelineNodeSpec, ...]:
         ds = self.settings.deepstream
         tracker_enabled = bool(getattr(ds, "enable_tracker", True))
         osd_enabled = bool(getattr(ds, "enable_osd", True))
-        output_sink = getattr(ds, "output_sink", "rtmp")
+        output_sink = self._effective_output_sink()
         use_fake_sink = output_sink == "fake"
         use_file_sink = output_sink == "file"
+        use_rtsp_sink = output_sink == "rtsp"
         tiler_enabled = bool(getattr(ds, "enable_tiler", False)) and len(branches) > 1
         live_source = any(branch.source.is_rtsp for branch in branches)
         nodes: list[PipelineNodeSpec] = [
@@ -216,6 +274,7 @@ class PipelineBuilder:
                     "height": ds.inference_height,
                     "live-source": live_source,
                     "attach-sys-ts": True,
+                    "enable-padding": True,
                 },
                 {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": True},
             ),
@@ -227,6 +286,7 @@ class PipelineBuilder:
                     "config-file-path": str(ds.infer_config_path),
                     "model-engine-file": str(ds.model_engine_path),
                     "custom-lib-path": str(ds.custom_lib_path),
+                    "batch-size": ds.batch_size,
                 },
                 {"required": True, "live": True, "supports_probe": True, "hardware_accelerated": True},
             ),
@@ -234,7 +294,7 @@ class PipelineBuilder:
                 "post-osd-queue",
                 "queue",
                 "output",
-                {"max-size-buffers": 8},
+                self._queue_properties(max_buffers=8),
                 {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": False},
             ),
             PipelineNodeSpec(
@@ -303,14 +363,17 @@ class PipelineBuilder:
                     "encoder-caps",
                     "capsfilter",
                     "encode",
-                    {"caps": "video/x-raw(memory:NVMM),format=NV12"},
+                    {"caps": self._build_encoder_caps(ds, tiler_enabled=tiler_enabled)},
                     {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": False},
                 ),
                 PipelineNodeSpec(
                     "encoder",
                     "nvv4l2h264enc",
                     "encode",
-                    {"bitrate": 4000000},
+                    {
+                        "bitrate": int(getattr(ds, "encoder_bitrate", 4000000)),
+                        "insert-sps-pps": True,
+                    },
                     {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": True},
                 ),
                 PipelineNodeSpec(
@@ -320,13 +383,7 @@ class PipelineBuilder:
                     {},
                     {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": False},
                 ),
-                PipelineNodeSpec(
-                    "output-mux",
-                    "qtmux" if use_file_sink else "flvmux",
-                    "output",
-                    {"streamable": 1} if not use_file_sink else {},
-                    {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": False},
-                ),
+                *self._build_output_mux_nodes(use_file_sink=use_file_sink, use_rtsp_sink=use_rtsp_sink),
             ]
 
         if tracker_enabled:
@@ -357,6 +414,7 @@ class PipelineBuilder:
 
     def _build_links(self, branches: tuple[SourceBranchSpec, ...]) -> tuple[tuple[str, str], ...]:
         links: list[tuple[str, str]] = []
+        use_rtsp_sink = self._effective_output_sink() == "rtsp"
         for branch in branches:
             links.extend(branch.links)
             links.append((branch.mux_input, "streammux"))
@@ -383,7 +441,7 @@ class PipelineBuilder:
             )
             current = "osd"
         links.append((current, "post-osd-queue"))
-        if getattr(self.settings.deepstream, "output_sink", "rtmp") == "fake":
+        if self._effective_output_sink() == "fake":
             links.append(("post-osd-queue", "sink"))
         else:
             links.extend(
@@ -392,8 +450,7 @@ class PipelineBuilder:
                     ("post-osd-convert", "encoder-caps"),
                     ("encoder-caps", "encoder"),
                     ("encoder", "h264-parser"),
-                    ("h264-parser", "output-mux"),
-                    ("output-mux", "sink"),
+                    *([("h264-parser", "rtsp-pay"), ("rtsp-pay", "sink")] if use_rtsp_sink else [("h264-parser", "output-mux"), ("output-mux", "sink")]),
                 ]
             )
         return tuple(links)
@@ -422,13 +479,20 @@ class PipelineBuilder:
         }
 
     def _build_output_policy(self) -> dict[str, Any]:
-        output_sink = getattr(self.settings.deepstream, "output_sink", "rtmp")
+        output_sink = self._effective_output_sink()
         return {
             "enable_osd": getattr(self.settings.deepstream, "enable_osd", True),
             "enable_encoder": output_sink != "fake",
             "enable_rtmp_sink": output_sink == "rtmp",
+            "enable_rtsp_sink": output_sink == "rtsp",
             "enable_file_sink": output_sink == "file",
             "enable_tiler": bool(getattr(self.settings.deepstream, "enable_tiler", False)),
+            "fallback_output_sink": self._forced_output_sink,
+            "enable_hardware_fallback": bool(getattr(self.settings.deepstream, "enable_hardware_fallback", True)),
+            "enable_last_frame_keepalive": bool(getattr(self.settings.deepstream, "enable_last_frame_keepalive", True)),
+            "last_frame_keepalive_timeout_ms": int(
+                getattr(self.settings.deepstream, "last_frame_keepalive_timeout_ms", 1000)
+            ),
             "enable_json_output": self.settings.output.enable_jsonl,
             "enable_mqtt_output": self.settings.output.enable_mqtt,
             "enable_kafka_output": self.settings.output.enable_kafka,
@@ -439,6 +503,8 @@ class PipelineBuilder:
             return "fakesink"
         if output_sink == "file":
             return "filesink"
+        if output_sink == "rtsp":
+            return "rtspclientsink"
         return "rtmpsink"
 
     def _build_sink_properties(self, output_sink: str) -> dict[str, Any]:
@@ -448,7 +514,40 @@ class PipelineBuilder:
             path = self.settings.deepstream.output_video_path
             path.parent.mkdir(parents=True, exist_ok=True)
             return {"location": str(path), "sync": False}
-        return {"location": "rtmp://127.0.0.1/live/stream"}
+        return {"location": self.settings.deepstream.output_url}
+
+    def _build_output_mux_nodes(
+        self,
+        *,
+        use_file_sink: bool,
+        use_rtsp_sink: bool,
+    ) -> tuple[PipelineNodeSpec, ...]:
+        if use_rtsp_sink:
+            return (
+                PipelineNodeSpec(
+                    "rtsp-pay",
+                    "rtph264pay",
+                    "encode",
+                    {"pt": 96, "config-interval": 1},
+                    {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": False},
+                ),
+            )
+        return (
+            PipelineNodeSpec(
+                "output-mux",
+                "qtmux" if use_file_sink else "flvmux",
+                "output",
+                {"streamable": 1} if not use_file_sink else {},
+                {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": False},
+            ),
+        )
+
+    def _build_encoder_caps(self, ds: object, *, tiler_enabled: bool) -> str:
+        width = int(getattr(ds, "tiler_width", 0) if tiler_enabled else getattr(ds, "inference_width", 0))
+        height = int(getattr(ds, "tiler_height", 0) if tiler_enabled else getattr(ds, "inference_height", 0))
+        if width > 0 and height > 0:
+            return f"video/x-raw(memory:NVMM),format=NV12,width={width},height={height}"
+        return "video/x-raw(memory:NVMM),format=NV12"
 
     def _build_tracker_properties(self) -> dict[str, Any]:
         tracker_path = self.settings.deepstream.tracker_config_path
@@ -521,7 +620,20 @@ class PipelineBuilder:
     def _merge_branch_properties(self, node) -> dict[str, Any]:
         properties = dict(node.properties)
         if node.name.startswith("pre-mux-queue"):
-            properties["max-size-buffers"] = self.settings.optimization.max_queue_size
+            properties.update(self._queue_properties(max_buffers=self.settings.optimization.max_queue_size))
+        return properties
+
+    def _effective_output_sink(self) -> str:
+        return self._forced_output_sink or getattr(self.settings.deepstream, "output_sink", "rtmp")
+
+    def _queue_properties(self, *, max_buffers: int) -> dict[str, Any]:
+        properties: dict[str, Any] = {
+            "max-size-buffers": max_buffers,
+            "max-size-time": 0,
+            "max-size-bytes": 0,
+        }
+        if bool(getattr(self.settings.optimization, "enable_drop_old_frames", True)):
+            properties["leaky"] = 2
         return properties
 
     def _build_dynamic_links(self, blueprint: PipelineBlueprint) -> tuple[dict[str, Any], ...]:
@@ -546,7 +658,9 @@ class PipelineBuilder:
             "sync_enabled": blueprint.timestamp_policy.get("sync_enabled", True),
             "enable_rtmp_sink": blueprint.output_policy.get("enable_rtmp_sink", True),
             "enable_tiler": blueprint.output_policy.get("enable_tiler", False),
-            "output_sink": getattr(self.settings.deepstream, "output_sink", "rtmp"),
+            "output_sink": self._effective_output_sink(),
+            "requested_output_sink": getattr(self.settings.deepstream, "output_sink", "rtmp"),
+            "fallback_output_sink": self._forced_output_sink,
             "enable_json_output": blueprint.output_policy.get("enable_json_output", True),
         }
 
@@ -685,7 +799,7 @@ class PipelineBuilder:
         if hasattr(sink_pad, "is_linked") and sink_pad.is_linked():
             return
         media_type = self._dynamic_pad_media_type(pad)
-        if not media_type.startswith("video/"):
+        if not self._is_video_dynamic_pad(media_type):
             logging.debug("ignoring non-video dynamic pad: %s", media_type or "unknown")
             return
         result = pad.link(sink_pad)
@@ -695,6 +809,7 @@ class PipelineBuilder:
             raise RuntimeError(
                 f"failed to dynamically link pad to `{getattr(target, 'name', target)}`"
             )
+        logging.info("dynamic pad linked: %s -> %s (%s)", getattr(src, "name", src), getattr(target, "name", target), media_type)
 
     def _dynamic_pad_media_type(self, pad) -> str:
         caps = pad.get_current_caps() if hasattr(pad, "get_current_caps") else None
@@ -704,6 +819,9 @@ class PipelineBuilder:
             return ""
         structure = caps.get_structure(0)
         return structure.get_name() if structure is not None else ""
+
+    def _is_video_dynamic_pad(self, media_type: str) -> bool:
+        return media_type.startswith("video/") or media_type == "application/x-rtp"
 
     def _on_probe_buffer(self, pad, info, user_data=None) -> int:
         _ = pad
@@ -768,10 +886,11 @@ class PipelineBuilder:
 
     def _frame_meta_to_payload(self, frame_meta: object) -> dict[str, Any]:
         source_id = self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0))
+        source_index = self._safe_int(source_id, 0)
         ntp_timestamp = self._safe_get(frame_meta, "ntp_timestamp", None)
         buf_pts = self._safe_get(frame_meta, "buf_pts", None)
         frame: dict[str, Any] = {
-            "stream_id": source_id,
+            "stream_id": canonical_stream_id(source_index),
             "source_id": source_id,
             "frame_id": self._safe_get(frame_meta, "frame_num", 0),
             "frame_num": self._safe_get(frame_meta, "frame_num", 0),
@@ -784,12 +903,14 @@ class PipelineBuilder:
 
         obj_list = getattr(frame_meta, "obj_meta_list", None)
         for obj_meta in self._iterate_glist(obj_list, "NvDsObjectMeta"):
-            object_payload = self._object_meta_to_payload(obj_meta)
+            object_payload = self._object_meta_to_payload(obj_meta, source_id=source_index)
             frame["obj_meta_list"].append(object_payload)
-            if self._is_valid_track_id(object_payload.get("object_id")):
+            if self._is_valid_track_id(object_payload.get("track_id")):
                 frame["tracks"].append(
                     {
-                        "track_id": object_payload["object_id"],
+                        "track_id": object_payload["track_id"],
+                        "global_track_id": object_payload["object_id"],
+                        "object_id": object_payload["object_id"],
                         "class_id": object_payload["class_id"],
                         "confidence": object_payload["confidence"],
                         "rect_params": object_payload["rect_params"],
@@ -797,7 +918,7 @@ class PipelineBuilder:
                 )
         return frame
 
-    def _object_meta_to_payload(self, obj_meta: object) -> dict[str, Any]:
+    def _object_meta_to_payload(self, obj_meta: object, *, source_id: int) -> dict[str, Any]:
         rect = getattr(obj_meta, "rect_params", None)
         rect_payload = {
             "left": self._safe_get(rect, "left", 0.0),
@@ -805,29 +926,52 @@ class PipelineBuilder:
             "width": self._safe_get(rect, "width", 0.0),
             "height": self._safe_get(rect, "height", 0.0),
         }
+        object_id = self._safe_get(obj_meta, "object_id", 0)
+        local_track_id = self._local_track_id(source_id, object_id)
         return {
             "class_id": self._safe_get(obj_meta, "class_id", 0),
             "obj_label": self._safe_get(obj_meta, "obj_label", "unknown"),
             "confidence": self._safe_get(obj_meta, "confidence", 0.0),
-            "object_id": self._safe_get(obj_meta, "object_id", 0),
+            "track_id": local_track_id,
+            "global_track_id": object_id,
+            "object_id": object_id,
             "rect_params": rect_payload,
         }
 
     def _apply_osd_track_labels(self, batch_meta: object) -> None:
         frame_list = getattr(batch_meta, "frame_meta_list", None)
         for frame_meta in self._iterate_glist(frame_list, "NvDsFrameMeta"):
+            source_id = self._safe_int(
+                self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0)),
+                0,
+            )
             obj_list = getattr(frame_meta, "obj_meta_list", None)
             for obj_meta in self._iterate_glist(obj_list, "NvDsObjectMeta"):
-                track_id = self._safe_get(obj_meta, "object_id", UNTRACKED_OBJECT_ID)
-                if not self._is_valid_track_id(track_id):
+                global_track_id = self._safe_get(obj_meta, "object_id", UNTRACKED_OBJECT_ID)
+                if not self._is_valid_track_id(global_track_id):
                     continue
+                local_track_id = self._local_track_id(source_id, global_track_id)
                 label = self._safe_get(obj_meta, "obj_label", "person")
                 if not label or label == "unknown":
                     label = "person"
                 confidence = float(self._safe_get(obj_meta, "confidence", 0.0))
                 text_params = getattr(obj_meta, "text_params", None)
                 if text_params is not None:
-                    text_params.display_text = f"{label} ID:{int(track_id)} {confidence:.2f}"
+                    text_params.display_text = f"{label} ID:{local_track_id} {confidence:.2f}"
+
+    def _local_track_id(self, source_id: object, global_track_id: object) -> int:
+        if not self._is_valid_track_id(global_track_id):
+            return self._safe_int(global_track_id, -1)
+        source_index = self._safe_int(source_id, 0)
+        global_id = self._safe_int(global_track_id, -1)
+        stream_map = self._stream_track_id_maps.setdefault(source_index, {})
+        existing = stream_map.get(global_id)
+        if existing is not None:
+            return existing
+        next_id = self._stream_next_track_ids.get(source_index, 1)
+        stream_map[global_id] = next_id
+        self._stream_next_track_ids[source_index] = next_id + 1
+        return next_id
 
     def _is_valid_track_id(self, value: object) -> bool:
         try:
@@ -873,3 +1017,9 @@ class PipelineBuilder:
         if isinstance(obj, dict):
             return obj.get(attr, default)
         return getattr(obj, attr, default)
+
+    def _safe_int(self, value: object, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default

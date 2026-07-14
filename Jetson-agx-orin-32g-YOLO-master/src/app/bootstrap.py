@@ -8,6 +8,7 @@ from app.application.debug_service import DebugService
 from app.application.orchestrator import Orchestrator
 from app.infrastructure.inference.meta_parser import MetaParser
 from app.infrastructure.monitoring.gpu_monitor import GpuMonitor
+from app.infrastructure.monitoring.runtime_metrics import RuntimeMetricsRecorder
 from app.infrastructure.output.json_writer import JsonWriter
 from app.infrastructure.pipeline.builder import PipelineBuilder
 from app.infrastructure.pipeline.manager import PipelineManager
@@ -33,8 +34,19 @@ def create_application(config_path: Path, settings=None) -> Application:
     pipeline_builder = PipelineBuilder(settings)
     meta_parser = MetaParser()
     pipeline_manager = PipelineManager(pipeline_builder, meta_parser=meta_parser)
-    json_writer = JsonWriter(settings.output.jsonl_path)
+    json_writer = JsonWriter(
+        settings.output.jsonl_path,
+        queue_size=settings.optimization.max_queue_size,
+        drop_oldest=settings.optimization.enable_drop_old_frames,
+        on_error=pipeline_manager.set_error,
+    )
     gpu_monitor = GpuMonitor()
+    runtime_metrics = RuntimeMetricsRecorder(
+        settings.output.metrics_jsonl_path,
+        stale_after_seconds=settings.optimization.stale_after_seconds,
+        enable_last_frame_keepalive=settings.deepstream.enable_last_frame_keepalive,
+        keepalive_timeout_ms=settings.deepstream.last_frame_keepalive_timeout_ms,
+    )
     fps_controller = FpsController(settings.optimization)
     backpressure_controller = BackpressureController(settings.optimization)
 
@@ -48,6 +60,7 @@ def create_application(config_path: Path, settings=None) -> Application:
         meta_parser=meta_parser,
         json_writer=json_writer,
         gpu_monitor=gpu_monitor,
+        runtime_metrics=runtime_metrics,
         fps_controller=fps_controller,
         backpressure_controller=backpressure_controller,
     )

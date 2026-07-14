@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+source "$ROOT_DIR/scripts/project_paths.sh"
 
 usage() {
     cat <<'USAGE'
@@ -17,7 +19,7 @@ Environment overrides:
 
 Example:
   scripts/run_person_detect.sh \
-    /home/nvidia/Desktop/YOLO/video/input.mp4 \
+    "$VIDEO_DIR/input.mp4" \
     outputs/person_detect.mp4 \
     outputs/results.jsonl
 USAGE

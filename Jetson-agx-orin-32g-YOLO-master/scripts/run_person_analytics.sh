@@ -24,8 +24,8 @@ Optional environment overrides:
 
 Example:
   scripts/run_person_analytics.sh \
-    /home/nvidia/Desktop/YOLO/video/1.mp4 \
-    outputs/final
+    "$VIDEO_DIR/1.mp4" \
+    "$OUTPUT_ROOT/final"
 USAGE
 }
 
