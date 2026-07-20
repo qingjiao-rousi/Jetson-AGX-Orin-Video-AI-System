@@ -1764,6 +1764,14 @@ scripts/run_acceptance_ui.sh /path/to/long_video_dir outputs/acceptance_long
 - `batch_quality.json` 不出现异常失败。
 - 处理过程无明显内存泄漏或进程卡死。
 
+### 混合精度
+当前存在 FP16 engine，但没有看到：
+INT8 engine；
+calibration dataset/cache；
+混合精度 profile；
+FP16/INT8/mixed 的统一对比脚本；
+mAP、召回率、误检漏检、功耗温度对比结果。
+
 ### 20.5 RTSP/RTMP 摄像头接入
 
 目标：

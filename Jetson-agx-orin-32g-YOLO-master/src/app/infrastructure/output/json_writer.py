@@ -23,6 +23,7 @@ class JsonWriter:
         queue_size: int = 32,
         drop_oldest: bool = True,
         on_error: Callable[[str], None] | None = None,
+        on_written: Callable[[], None] | None = None,
     ) -> None:
         if queue_size <= 0:
             raise ValueError("queue_size must be greater than zero")
@@ -32,6 +33,7 @@ class JsonWriter:
         self._queue: Queue[object] = Queue(maxsize=queue_size)
         self._drop_oldest = drop_oldest
         self._on_error = on_error
+        self._on_written = on_written
         self._lock = Lock()
         self._closed = False
         self._worker_error: str | None = None
@@ -113,6 +115,8 @@ class JsonWriter:
                 if item is _SENTINEL:
                     return
                 self._write_item(item)
+                if self._on_written is not None:
+                    self._on_written()
             except Exception as exc:
                 message = f"JSON result writer failed: {exc}"
                 with self._lock:

@@ -53,6 +53,7 @@ class Track:
     confidence: float
     bbox: BoundingBox
     global_track_id: int | None = None
+    class_name: str = "unknown"
 
 
 @dataclass(frozen=True)

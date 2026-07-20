@@ -1,0 +1,15 @@
+tmp/
+outputs/
+.runtime/
+build/
+.idea/
+**/__pycache__/
+*.pyc
+*.mp4
+*.avi
+*.mkv
+*.log
+*.pid
+auto.key
+auto.crt
+*.engine.before_batch8

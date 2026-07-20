@@ -7,6 +7,7 @@
 
 #if __has_include("nvdsmeta.h")
 #include "nvdsmeta.h"
+#include "gstnvdsmeta.h"
 #define PROBE_HANDLER_HAS_DEEPSTREAM 1
 #else
 #define PROBE_HANDLER_HAS_DEEPSTREAM 0
@@ -109,6 +110,7 @@ std::string frames_to_json(const std::vector<ProbeFrameResult>& frames) {
             out << ',';
         }
         out << "{\"stream_id\":\"stream-" << frame.stream_id << "\",";
+        out << "\"source_id\":" << frame.stream_id << ',';
         out << "\"frame_id\":" << frame.frame_id << ',';
         out << "\"ntp_timestamp\":" << frame.ntp_timestamp << ',';
         out << "\"detections\":[";
@@ -139,12 +141,34 @@ std::string frames_to_json(const std::vector<ProbeFrameResult>& frames) {
 
 extern "C" {
 
-const char* probe_parse_nvds_batch_meta_json(const _NvDsBatchMeta* batch_meta) {
+namespace {
+
+const char* allocate_json(const _NvDsBatchMeta* batch_meta) {
     const auto frames = probe_handler::parse_nvds_batch_meta(batch_meta);
     const auto payload = probe_handler::frames_to_json(frames);
     auto* result = new char[payload.size() + 1];
     std::memcpy(result, payload.c_str(), payload.size() + 1);
     return result;
+}
+
+}  // namespace
+
+const char* probe_parse_nvds_batch_meta_json(const _NvDsBatchMeta* batch_meta) {
+    return allocate_json(batch_meta);
+}
+
+const char* probe_parse_gst_buffer_json(const void* buffer) {
+#if PROBE_HANDLER_HAS_DEEPSTREAM
+    if (buffer == nullptr) {
+        return allocate_json(nullptr);
+    }
+    auto* gst_buffer = reinterpret_cast<GstBuffer*>(const_cast<void*>(buffer));
+    return allocate_json(reinterpret_cast<const _NvDsBatchMeta*>(
+        gst_buffer_get_nvds_batch_meta(gst_buffer)));
+#else
+    (void)buffer;
+    return allocate_json(nullptr);
+#endif
 }
 
 void probe_free_json(const char* payload) {

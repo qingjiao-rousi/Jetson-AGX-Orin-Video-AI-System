@@ -39,6 +39,7 @@ deepstream:
   batched_push_timeout_us: 40000
   inference_width: 640
   inference_height: 640
+  infer_interval: 1
   model_engine_path: models/yolov8s.engine
   # 指向一个自定义的YOLO解析库,如非极大值抑制NMS
   custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so

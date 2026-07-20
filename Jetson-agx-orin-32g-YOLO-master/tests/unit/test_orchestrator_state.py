@@ -139,7 +139,7 @@ class OrchestratorStateTests(unittest.TestCase):
         self.assertIn("monitor", snapshot)
         self.assertIn("controllers", snapshot)
 
-    def test_frame_result_is_written_without_second_parse_and_marked_consumed(self) -> None:
+    def test_frame_result_is_written_without_second_parse(self) -> None:
         writer = FakeWriter()
         backpressure = FakeController()
         fps = FakeController()
@@ -163,8 +163,8 @@ class OrchestratorStateTests(unittest.TestCase):
         self.assertIs(writer.last, result)
         self.assertIs(orchestrator._last_result, result)
         self.assertEqual(backpressure.stats()["observations"], 1)
-        self.assertEqual(backpressure.stats()["consumed"], 1)
-        self.assertEqual(fps.stats()["observations"], 1)
+        self.assertEqual(backpressure.stats()["consumed"], 0)
+        self.assertEqual(fps.stats()["observations"], 0)
 
     def test_frame_result_errors_are_captured_without_escaping_probe_callback(self) -> None:
         pipeline_manager = FakePipelineManager()

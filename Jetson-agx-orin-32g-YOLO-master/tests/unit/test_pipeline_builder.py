@@ -92,9 +92,15 @@ class PipelineBuilderRuntimeTests(unittest.TestCase):
             self.assertIn("probe_attachments", runtime)
             self.assertIn("assembly_steps", runtime)
             self.assertIn(("streammux", "primary-infer"), runtime["static_links"])
+            primary_infer = next(
+                node for node in runtime["blueprint"].nodes if node.name == "primary-infer"
+            )
+            tracker = next(node for node in runtime["blueprint"].nodes if node.name == "tracker")
+            self.assertNotIn("custom-lib-path", primary_infer.properties)
+            self.assertNotIn("enable-batch-process", tracker.properties)
             self.assertTrue(any(plan["source"] == "source-1" for plan in runtime["dynamic_links"]))
             self.assertTrue(any(req["target"] == "streammux" for req in runtime["streammux_requests"]))
-            self.assertTrue(any(attachment["element"] == "osd" for attachment in runtime["probe_attachments"]))
+            self.assertEqual(runtime["probe_attachments"], ())
             self.assertIn("add_elements_to_pipeline", runtime["assembly_steps"])
 
     def test_runtime_helpers_bind_dynamic_pads_and_probes(self) -> None:
@@ -238,7 +244,10 @@ class PipelineBuilderRuntimeTests(unittest.TestCase):
             self.assertEqual(node_by_name["tiler"].properties["columns"], 2)
             self.assertIn(("tracker", "tiler"), blueprint.links)
             self.assertIn(("tiler", "pre-osd-convert"), blueprint.links)
-            self.assertEqual(blueprint.probes, (("tiler", "sink"),))
+            self.assertEqual(
+                blueprint.probes,
+                (("primary-infer", "sink"), ("pre-osd-caps", "sink")),
+            )
 
     def test_rtsp_output_uses_h264_payloader_and_configured_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

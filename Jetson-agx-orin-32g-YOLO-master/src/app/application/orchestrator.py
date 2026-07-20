@@ -8,6 +8,11 @@ import time
 from typing import Any
 
 from app.domain.entities import FrameResult
+from app.application.routing_policy import RoutingPolicy, TaskRequestBuffer
+from app.application.helmet_service import HelmetEvent
+from app.application.plate_service import VehiclePassEvent
+from app.application.pose_service import PoseEvent
+from app.application.fire_smoke_service import FireSmokeEvent
 
 
 @dataclass
@@ -20,10 +25,19 @@ class Orchestrator:
     fps_controller: object
     backpressure_controller: object
     runtime_metrics: object | None = None
+    routing_policy: RoutingPolicy | None = None
+    task_buffer: TaskRequestBuffer | None = None
+    helmet_worker: object | None = None
+    plate_worker: object | None = None
+    event_writer: object | None = None
+    scene_analytics: object | None = None
+    pose_worker: object | None = None
+    fire_smoke_worker: object | None = None
 
     _stop_event: Event = field(default_factory=Event, init=False, repr=False)
     _started: bool = field(default=False, init=False, repr=False)
     _last_result: FrameResult | None = field(default=None, init=False, repr=False)
+    _logged_routing_tasks: set[str] = field(default_factory=set, init=False, repr=False)
 
     def start(self) -> None:
         if self._started:
@@ -32,10 +46,20 @@ class Orchestrator:
         self._stop_event.clear()
         self.pipeline_manager.clear_error()
         self.pipeline_manager.probes().register_frame_result_handler(self.on_frame_result)
+        if hasattr(self.pipeline_manager, "set_frame_gate") and hasattr(self.fps_controller, "should_drop_frame"):
+            self.pipeline_manager.set_frame_gate(self.fps_controller.should_drop_frame)
         self.gpu_monitor.start()
         if hasattr(self.runtime_metrics, "start"):
             self.runtime_metrics.start()
         self.pipeline_manager.start()
+        if self.helmet_worker is not None and hasattr(self.helmet_worker, "start"):
+            self.helmet_worker.start()
+        if self.plate_worker is not None and hasattr(self.plate_worker, "start"):
+            self.plate_worker.start()
+        if self.pose_worker is not None and hasattr(self.pose_worker, "start"):
+            self.pose_worker.start()
+        if self.fire_smoke_worker is not None and hasattr(self.fire_smoke_worker, "start"):
+            self.fire_smoke_worker.start()
         self._started = True
         self._log_pipeline_summary()
 
@@ -56,10 +80,20 @@ class Orchestrator:
         if self._stop_event.is_set() and not self._started:
             return
         self._stop_event.set()
+        if self.helmet_worker is not None and hasattr(self.helmet_worker, "stop"):
+            self.helmet_worker.stop()
+        if self.plate_worker is not None and hasattr(self.plate_worker, "stop"):
+            self.plate_worker.stop()
+        if self.pose_worker is not None and hasattr(self.pose_worker, "stop"):
+            self.pose_worker.stop()
+        if self.fire_smoke_worker is not None and hasattr(self.fire_smoke_worker, "stop"):
+            self.fire_smoke_worker.stop()
         self.pipeline_manager.stop()
         self.gpu_monitor.stop()
         if hasattr(self.runtime_metrics, "close"):
             self.runtime_metrics.close()
+        if self.event_writer is not None and hasattr(self.event_writer, "close"):
+            self.event_writer.close()
         self.json_writer.close()
         self._started = False
 
@@ -69,15 +103,31 @@ class Orchestrator:
         try:
             self._last_result = result
             self.backpressure_controller.observe(result)
-            self.fps_controller.observe(result)
+            if self.scene_analytics is not None:
+                for event in self.scene_analytics.observe(result):
+                    if self.event_writer is not None and hasattr(self.event_writer, "write"):
+                        self.event_writer.write(event)
+            if self.routing_policy is not None:
+                requests = self.routing_policy.route(result)
+                if self.task_buffer is not None:
+                    self.task_buffer.submit(requests)
+                for request in requests:
+                    if request.task_name not in self._logged_routing_tasks:
+                        logging.info(
+                            "routed model task: task=%s model=%s stream=%s track=%s frame=%s",
+                            request.task_name,
+                            request.model_name,
+                            request.stream_id,
+                            request.track_id,
+                            request.frame_id,
+                        )
+                        self._logged_routing_tasks.add(request.task_name)
             self.json_writer.write(result)
             if hasattr(self.runtime_metrics, "observe"):
                 self.runtime_metrics.observe(
                     result,
                     gpu_snapshot=self.gpu_monitor.snapshot() if hasattr(self.gpu_monitor, "snapshot") else None,
                 )
-            if hasattr(self.backpressure_controller, "mark_consumed"):
-                self.backpressure_controller.mark_consumed()
         except Exception as exc:
             message = f"frame result handler failed: {exc}"
             logging.exception("frame result handler failed")
@@ -89,6 +139,55 @@ class Orchestrator:
         logging.error("pipeline error: %s", message)
         self.stop()
         raise RuntimeError(message)
+
+    def on_helmet_event(self, event: HelmetEvent) -> None:
+        if self.event_writer is not None and hasattr(self.event_writer, "write"):
+            self.event_writer.write(event)
+        logging.warning(
+            "helmet violation: stream=%s track=%s frame=%s confidence=%.3f",
+            event.stream_id,
+            event.track_id,
+            event.frame_id,
+            event.confidence,
+        )
+
+    def on_vehicle_event(self, event: VehiclePassEvent) -> None:
+        if self.event_writer is not None and hasattr(self.event_writer, "write"):
+            self.event_writer.write(event)
+        if hasattr(self.pipeline_manager, "register_plate_annotation"):
+            self.pipeline_manager.register_plate_annotation(
+                event.stream_id,
+                event.track_id,
+                {
+                    "plate_text": event.plate_text,
+                    "confidence": event.confidence,
+                    "plate_bbox": {
+                        "left": event.plate_bbox.left,
+                        "top": event.plate_bbox.top,
+                        "width": event.plate_bbox.width,
+                        "height": event.plate_bbox.height,
+                    },
+                },
+            )
+        logging.info(
+            "vehicle pass: stream=%s track=%s plate=%s confidence=%.3f",
+            event.stream_id,
+            event.track_id,
+            event.plate_text,
+            event.confidence,
+        )
+
+    def on_pose_event(self, event: PoseEvent) -> None:
+        if self.event_writer is not None and hasattr(self.event_writer, "write"):
+            self.event_writer.write(event)
+
+    def on_fire_smoke_event(self, event: FireSmokeEvent) -> None:
+        if self.event_writer is not None and hasattr(self.event_writer, "write"):
+            self.event_writer.write(event)
+        logging.warning(
+            "fire/smoke detection: stream=%s frame=%s status=%s confidence=%.3f",
+            event.stream_id, event.frame_id, event.status, event.confidence,
+        )
 
     def pipeline_state(self) -> dict[str, Any]:
         state = self.pipeline_manager.state()
@@ -146,6 +245,23 @@ class Orchestrator:
                 if hasattr(self.backpressure_controller, "stats")
                 else {},
             },
+            "routing": {
+                "policy": self.routing_policy.stats()
+                if self.routing_policy is not None
+                else {},
+                "task_buffer": self.task_buffer.stats()
+                if self.task_buffer is not None
+                else {},
+            },
+            "helmet_worker": self.helmet_worker.stats()
+            if self.helmet_worker is not None and hasattr(self.helmet_worker, "stats")
+            else {},
+            "plate_worker": self.plate_worker.stats()
+            if self.plate_worker is not None and hasattr(self.plate_worker, "stats")
+            else {},
+            "events": self.event_writer.stats()
+            if self.event_writer is not None and hasattr(self.event_writer, "stats")
+            else {},
             "last_result": pipeline_state.get("last_result"),
             "is_running": pipeline_state.get("is_running"),
             "source_count": pipeline_state.get("source_count"),

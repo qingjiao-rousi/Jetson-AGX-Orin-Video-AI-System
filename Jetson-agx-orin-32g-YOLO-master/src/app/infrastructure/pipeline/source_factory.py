@@ -14,6 +14,10 @@ class SourceSpec:
     uri: str
     kind: str
     enabled: bool
+    scene: str = "normal"
+    priority: str = "medium"
+    zones: tuple[str, ...] = ()
+    capabilities: tuple[str, ...] = ()
 
     @property
     def is_rtsp(self) -> bool:
@@ -76,6 +80,10 @@ class SourceFactory:
             uri=self._normalize_uri(source.uri),
             kind=kind,
             enabled=source.enabled,
+            scene=source.scene,
+            priority=source.priority,
+            zones=source.zones,
+            capabilities=source.capabilities,
         )
 
     def _normalize_uri(self, uri: str) -> str:

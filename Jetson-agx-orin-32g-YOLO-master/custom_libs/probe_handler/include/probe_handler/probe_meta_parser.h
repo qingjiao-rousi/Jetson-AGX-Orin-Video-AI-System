@@ -43,6 +43,7 @@ extern "C" {
 using ProbeJsonFreeFn = void (*)(const char*);
 
 const char* probe_parse_nvds_batch_meta_json(const _NvDsBatchMeta* batch_meta);
+const char* probe_parse_gst_buffer_json(const void* buffer);
 void probe_free_json(const char* payload);
 
 }

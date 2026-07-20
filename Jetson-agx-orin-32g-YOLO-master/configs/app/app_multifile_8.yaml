@@ -3,6 +3,88 @@ app:
   source_count: 8
   enable_web: false
 
+scenes:
+  production:
+    description: 生产作业区
+  warehouse:
+    description: 仓库物流通道
+  vehicle_gate:
+    description: 车辆出入口
+  normal:
+    description: 普通监控区
+
+models:
+  primary:
+    backend: deepstream_nvinfer
+    engine: models/yolov8s.engine
+  helmet:
+    backend: tensorrt
+    engine: models/ppe_yolov8n_dynamic_fp16.engine
+    labels: models/ppe_labels.txt
+    input_width: 640
+    input_height: 640
+    confidence_threshold: 0.25
+    nms_iou_threshold: 0.45
+  pose:
+    backend: tensorrt
+    engine: models/v8_n_pose_fp16.engine
+    input_width: 640
+    input_height: 640
+  fire_smoke:
+    backend: tensorrt
+    engine: models/fire_smoke_best_fp16.engine
+    labels: models/fire_smoke_labels.txt
+    input_width: 640
+    input_height: 640
+  plate_detector:
+    backend: tensorrt
+    engine: models/plate_detector_fastalpr.engine
+    input_width: 384
+    input_height: 384
+  plate_ocr:
+    backend: tensorrt
+    engine: models/plate_ocr_fastalpr-dynamic.engine
+    config: models/plate_ocr_config.yaml
+    input_width: 128
+    input_height: 64
+
+model_tasks:
+  helmet:
+    model: helmet
+    trigger_classes: [person]
+    interval: 2
+    min_track_frames: 3
+  pose:
+    model: pose
+    trigger_classes: [person]
+    interval: 10
+    min_track_frames: 3
+  fire_smoke:
+    model: fire_smoke
+    interval: 10
+    min_track_frames: 1
+    frame_trigger: true
+  plate_detector:
+    model: plate_detector
+    trigger_classes: [car, truck, bus]
+    interval: 5
+    min_track_frames: 3
+
+capabilities:
+  helmet_compliance:
+    tasks: [helmet]
+  pose_analysis:
+    tasks: [pose]
+  fire_smoke_monitoring:
+    tasks: [fire_smoke]
+  license_plate_recognition:
+    # Plate OCR is executed by PlateTaskWorker after plate_detector.
+    tasks: [plate_detector]
+  basic_detection:
+    tasks: []
+  warehouse_analytics:
+    tasks: []
+
 web:
   enabled: false
   host: 127.0.0.1
@@ -18,34 +100,73 @@ sources:
     kind: file
     uri: ../video/1.mp4
     enabled: true
+    scene: vehicle_gate
+    priority: high
+    capabilities: [license_plate_recognition, fire_smoke_monitoring]
   - name: local_video_02
     kind: file
     uri: ../video/2.mp4
     enabled: true
+    scene: production
+    capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]
   - name: local_video_03
     kind: file
     uri: ../video/3.mp4
     enabled: true
+    scene: production
+    capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]
   - name: local_video_04
     kind: file
     uri: ../video/4.mp4
     enabled: true
+    scene: production
+    capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]
   - name: local_video_05
     kind: file
     uri: ../video/5.mp4
     enabled: true
+    scene: normal
+    capabilities: [basic_detection, fire_smoke_monitoring]
   - name: local_video_06
     kind: file
     uri: ../video/6.mp4
     enabled: true
+    scene: production
+    capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]
   - name: local_video_07
     kind: file
     uri: ../video/7.mp4
     enabled: true
+    scene: warehouse
+    capabilities: [warehouse_analytics, fire_smoke_monitoring]
   - name: local_video_08
     kind: file
     uri: ../video/8.mp4
     enabled: true
+    scene: warehouse
+    capabilities: [warehouse_analytics, fire_smoke_monitoring]
+
+analytics:
+  # Coordinates use the 1280x720 output coordinate system.
+  streams:
+    stream-6:
+      zones:
+        - id: warehouse_main
+          rect: [0, 0, 1280, 720]
+      lines:
+        - id: warehouse_entry
+          points: [[640, 0], [640, 720]]
+          min_side_distance: 2.0
+          count_once_per_track: true
+    stream-7:
+      zones:
+        - id: warehouse_main
+          rect: [0, 0, 1280, 720]
+      lines:
+        - id: warehouse_entry
+          points: [[640, 0], [640, 720]]
+          min_side_distance: 2.0
+          count_once_per_track: true
 
 logging:
   level: INFO
@@ -54,6 +175,7 @@ logging:
 
 output:
   jsonl_path: outputs/multifile_inproc/results.jsonl
+  events_jsonl_path: outputs/multifile_inproc/events.jsonl
   enable_jsonl: true
   enable_mqtt: false
   enable_kafka: false
@@ -73,6 +195,7 @@ deepstream:
   batched_push_timeout_us: 40000
   inference_width: 640
   inference_height: 640
+  infer_interval: 1
   enable_tracker: true
   enable_osd: true
   enable_tiler: true

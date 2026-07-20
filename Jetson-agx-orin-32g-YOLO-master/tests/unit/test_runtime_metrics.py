@@ -16,6 +16,8 @@ class RuntimeMetricsTests(unittest.TestCase):
     def test_stream_metrics_expose_current_counts_age_and_frame_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             recorder = RuntimeMetricsRecorder(Path(tmp) / "metrics.jsonl")
+            recorder.set_probe_metrics_provider(lambda: {"native_calls": 3})
+            recorder.set_control_metrics_provider(lambda: {"fps": {"dropped_frames": 2}})
             recorder.start()
             result = FrameResult(
                 stream_id="stream-0",
@@ -39,6 +41,8 @@ class RuntimeMetricsTests(unittest.TestCase):
         self.assertEqual(stream["dropped_frames"], 4)
         self.assertEqual(stream["dropped_frame_rate"], 0.8)
         self.assertGreaterEqual(stream["frame_age_ms"], 0)
+        self.assertEqual(payload["probe"]["native_calls"], 3)
+        self.assertEqual(payload["controls"]["fps"]["dropped_frames"], 2)
 
 
 if __name__ == "__main__":

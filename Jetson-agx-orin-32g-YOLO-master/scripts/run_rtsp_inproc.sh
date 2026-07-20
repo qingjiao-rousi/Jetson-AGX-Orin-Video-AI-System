@@ -21,6 +21,9 @@ Optional environment overrides:
   RTSP_BASE=rtsp://127.0.0.1:8554/stream
   RTSP_URIS=rtsp://127.0.0.1:8554/stream1,rtsp://127.0.0.1:8554/stream2
   OUTPUT_SINK=fake
+  ENABLE_OSD=1
+  ENABLE_FPS_CONTROL=1
+  ENABLE_BACKPRESSURE=1
   OUTPUT_URL=rtmp://127.0.0.1/live/stream
   OUTPUT_WIDTH=640
   OUTPUT_HEIGHT=640
@@ -55,6 +58,9 @@ SOURCE_COUNT="${SOURCE_COUNT:-8}"
 RTSP_BASE="${RTSP_BASE:-rtsp://127.0.0.1:8554/stream}"
 RTSP_URIS="${RTSP_URIS:-}"
 OUTPUT_SINK="${OUTPUT_SINK:-fake}"
+ENABLE_OSD="${ENABLE_OSD:-1}"
+ENABLE_FPS_CONTROL="${ENABLE_FPS_CONTROL:-1}"
+ENABLE_BACKPRESSURE="${ENABLE_BACKPRESSURE:-1}"
 OUTPUT_URL="${OUTPUT_URL:-rtmp://127.0.0.1/live/stream}"
 OUTPUT_WIDTH="${OUTPUT_WIDTH:-640}"
 OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-640}"
@@ -91,6 +97,21 @@ if [ "$ENABLE_LAST_FRAME_KEEPALIVE" = "1" ]; then
 else
     ENABLE_LAST_FRAME_KEEPALIVE_YAML=false
 fi
+if [ "$ENABLE_OSD" = "1" ]; then
+    ENABLE_OSD_YAML=true
+else
+    ENABLE_OSD_YAML=false
+fi
+if [ "$ENABLE_FPS_CONTROL" = "1" ]; then
+    ENABLE_FPS_CONTROL_YAML=true
+else
+    ENABLE_FPS_CONTROL_YAML=false
+fi
+if [ "$ENABLE_BACKPRESSURE" = "1" ]; then
+    ENABLE_BACKPRESSURE_YAML=true
+else
+    ENABLE_BACKPRESSURE_YAML=false
+fi
 RTSP_URI_ARRAY=()
 if [ -n "$RTSP_URIS" ]; then
     IFS=',' read -r -a RTSP_URI_ARRAY <<< "$RTSP_URIS"
@@ -107,6 +128,12 @@ if [ "$OUTPUT_SINK" != "fake" ] && [ "$OUTPUT_SINK" != "file" ] && [ "$OUTPUT_SI
         exit 1
     fi
 fi
+if [ "$ENABLE_OSD" != "0" ] && [ "$ENABLE_OSD" != "1" ]; then
+    echo "ENABLE_OSD must be 0 or 1: $ENABLE_OSD" >&2
+    exit 1
+fi
+if [ "$ENABLE_FPS_CONTROL" != "0" ] && [ "$ENABLE_FPS_CONTROL" != "1" ]; then exit 1; fi
+if [ "$ENABLE_BACKPRESSURE" != "0" ] && [ "$ENABLE_BACKPRESSURE" != "1" ]; then exit 1; fi
 
 mkdir -p "$OUTPUT_DIR/.runtime"
 
@@ -172,8 +199,8 @@ optimization:
   max_queue_size: 32
   fps_min: 5.0
   fps_max: 30.0
-  enable_fps_control: false
-  enable_backpressure: true
+  enable_fps_control: $ENABLE_FPS_CONTROL_YAML
+  enable_backpressure: $ENABLE_BACKPRESSURE_YAML
   enable_drop_old_frames: $ENABLE_DROP_OLD_FRAMES_YAML
   stale_after_seconds: $STALE_AFTER_SECONDS
 
@@ -188,7 +215,7 @@ deepstream:
   tiler_width: $TILER_WIDTH
   tiler_height: $TILER_HEIGHT
   enable_tracker: true
-  enable_osd: true
+  enable_osd: $ENABLE_OSD_YAML
   output_sink: $OUTPUT_SINK
   output_url: $OUTPUT_URL
   output_video_path: $OUTPUT_DIR/rtsp_preview.mp4

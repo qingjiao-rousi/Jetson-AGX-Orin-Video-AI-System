@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import logging
+from threading import Lock
+import time
 
 from app.domain.entities import canonical_stream_id
 from app.infrastructure.pipeline.source_factory import SourceBranchSpec, SourceFactory, SourceSpec
+from app.infrastructure.pipeline.cpp_probe import CppProbeHandler
 
 UNTRACKED_OBJECT_ID = 0xFFFFFFFFFFFFFFFF
+OSD_CONFIDENCE_UPDATE_THRESHOLD = 0.05
 
 
 @dataclass(frozen=True)
@@ -124,6 +128,36 @@ class PipelineBuilder:
         self._forced_output_sink: str | None = None
         self._stream_track_id_maps: dict[int, dict[int, int]] = {}
         self._stream_next_track_ids: dict[int, int] = {}
+        self._osd_last_label_state: dict[tuple[int, int], tuple[str, float, int]] = {}
+        self._plate_annotations: dict[tuple[int, int], dict[str, Any]] = {}
+        self._plate_annotations_lock = Lock()
+        self._probe_metrics_lock = Lock()
+        self._probe_metrics_state: dict[str, int] = {
+            "probe_batches": 0,
+            "native_calls": 0,
+            "native_total_ns": 0,
+            "python_calls": 0,
+            "python_total_ns": 0,
+            "python_fallback_calls": 0,
+            "osd_frames": 0,
+            "osd_objects": 0,
+            "osd_updates": 0,
+        }
+        self._cpp_probe = CppProbeHandler(
+            getattr(self.settings.deepstream, "probe_handler_path", None)
+        )
+
+    def register_plate_annotation(self, stream_id: str, track_id: int, event: dict[str, Any]) -> None:
+        try:
+            source_id = int(str(stream_id).rsplit("-", 1)[-1])
+        except (TypeError, ValueError):
+            return
+        with self._plate_annotations_lock:
+            self._plate_annotations[(source_id, int(track_id))] = dict(event)
+
+    def _plate_annotation(self, source_id: int, local_track_id: int) -> dict[str, Any] | None:
+        with self._plate_annotations_lock:
+            return self._plate_annotations.get((source_id, local_track_id))
 
     def build(self) -> PipelineBlueprint:
         self.settings.validate()
@@ -170,7 +204,7 @@ class PipelineBuilder:
                 "link_static_elements",
                 "prepare_dynamic_pad_handlers",
                 "prepare_streammux_requests",
-                "attach_probe_points",
+                "register_probe_points",
             ),
             "probe_points": blueprint.probes,
             "runtime_flags": self._build_runtime_flags(blueprint),
@@ -179,7 +213,6 @@ class PipelineBuilder:
         if not self._runtime_factory.available:
             runtime["dynamic_links"] = self.prepare_dynamic_pad_handlers(runtime)
             runtime["streammux_requests"] = self.prepare_streammux_requests(runtime)
-            runtime["probe_attachments"] = self.attach_probe_points(runtime)
             logging.warning("GStreamer runtime is not available in the current environment")
             return runtime
 
@@ -219,7 +252,6 @@ class PipelineBuilder:
         runtime["linked_pairs"] = self.link_static_elements(runtime)
         runtime["dynamic_links"] = self.prepare_dynamic_pad_handlers(runtime)
         runtime["streammux_requests"] = self.prepare_streammux_requests(runtime)
-        runtime["probe_attachments"] = self.attach_probe_points(runtime)
         return runtime
 
     def _should_fallback_to_fake_output(self, exc: RuntimeError) -> bool:
@@ -285,7 +317,6 @@ class PipelineBuilder:
                 {
                     "config-file-path": str(ds.infer_config_path),
                     "model-engine-file": str(ds.model_engine_path),
-                    "custom-lib-path": str(ds.custom_lib_path),
                     "batch-size": ds.batch_size,
                 },
                 {"required": True, "live": True, "supports_probe": True, "hardware_accelerated": True},
@@ -348,6 +379,24 @@ class PipelineBuilder:
                     },
                     {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": True},
                 ),
+            )
+            nodes.extend(
+                [
+                    PipelineNodeSpec(
+                        "pre-tiler-convert",
+                        "nvvideoconvert",
+                        "compose",
+                        {},
+                        {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": True},
+                    ),
+                    PipelineNodeSpec(
+                        "pre-tiler-caps",
+                        "capsfilter",
+                        "compose",
+                        {"caps": "video/x-raw(memory:NVMM),format=RGBA"},
+                        {"required": True, "live": True, "supports_probe": False, "hardware_accelerated": False},
+                    ),
+                ]
             )
 
         if not use_fake_sink:
@@ -429,7 +478,13 @@ class PipelineBuilder:
             links.append((current, "tracker"))
             current = "tracker"
         if bool(getattr(self.settings.deepstream, "enable_tiler", False)) and len(branches) > 1:
-            links.append((current, "tiler"))
+            links.extend(
+                [
+                    (current, "pre-tiler-convert"),
+                    ("pre-tiler-convert", "pre-tiler-caps"),
+                    ("pre-tiler-caps", "tiler"),
+                ]
+            )
             current = "tiler"
         if getattr(self.settings.deepstream, "enable_osd", True):
             links.extend(
@@ -456,16 +511,23 @@ class PipelineBuilder:
         return tuple(links)
 
     def _build_probes(self) -> tuple[tuple[str, str], ...]:
+        probes: list[tuple[str, str]] = []
+        if bool(getattr(self.settings.optimization, "enable_fps_control", True)):
+            probes.append(("primary-infer", "sink"))
         if (
             getattr(self.settings.deepstream, "enable_osd", True)
             and bool(getattr(self.settings.deepstream, "enable_tiler", False))
             and self.settings.effective_source_count() > 1
         ):
-            return (("tiler", "sink"),)
+            # Keep metadata before tiler and capture RGBA frames immediately
+            # before tiler. Tiler output no longer owns per-source metadata.
+            probes.append(("tracker", "src") if self.settings.deepstream.enable_tracker else ("primary-infer", "src"))
+            probes.append(("pre-tiler-caps", "sink"))
+            return tuple(probes)
         if getattr(self.settings.deepstream, "enable_osd", True):
-            probes = [("osd", "sink")]
+            probes.append(("osd", "sink"))
         else:
-            probes = [("primary-infer", "src")]
+            probes.append(("primary-infer", "src"))
         return tuple(probes)
 
     def _build_timestamp_policy(self) -> dict[str, Any]:
@@ -557,7 +619,6 @@ class PipelineBuilder:
             "gpu-id": 0,
             "ll-lib-file": "/opt/nvidia/deepstream/deepstream-7.1/lib/libnvds_nvmultiobjecttracker.so",
             "ll-config-file": "/opt/nvidia/deepstream/deepstream-7.1/samples/configs/deepstream-app/config_tracker_IOU.yml",
-            "enable-batch-process": 1,
         }
         if not tracker_path.exists():
             return defaults
@@ -769,6 +830,14 @@ class PipelineBuilder:
                 user_data = {
                     "probe_registry": runtime.get("probe_registry"),
                     "meta_parser": runtime.get("meta_parser"),
+                    "cpp_probe": self._cpp_probe,
+                    "mode": (
+                        "pre_infer_gate" if (element_name, pad_name) == ("primary-infer", "sink")
+                        else "frame_only" if element_name == "pre-tiler-caps"
+                        else "result"
+                    ),
+                    "frame_gate": runtime.get("frame_gate"),
+                    "frame_store": runtime.get("frame_store"),
                 }
                 try:
                     pad.add_probe(
@@ -825,6 +894,20 @@ class PipelineBuilder:
 
     def _on_probe_buffer(self, pad, info, user_data=None) -> int:
         _ = pad
+        user_data = user_data or {}
+        if user_data.get("mode") == "pre_infer_gate":
+            gate = user_data.get("frame_gate")
+            dropped = gate() if gate is not None else False
+            gst = self._runtime_factory.gst
+            if gst is not None and hasattr(gst, "PadProbeReturn"):
+                return gst.PadProbeReturn.DROP if dropped else gst.PadProbeReturn.OK
+            return 0 if dropped else 1
+        if user_data.get("mode") == "frame_only":
+            self._capture_probe_frames(info, user_data.get("frame_store"))
+            gst = self._runtime_factory.gst
+            if gst is not None and hasattr(gst, "PadProbeReturn"):
+                return gst.PadProbeReturn.OK
+            return 1
         payload = self._extract_probe_payload(info)
         registry = None if user_data is None else user_data.get("probe_registry")
         parser = None if user_data is None else user_data.get("meta_parser")
@@ -835,28 +918,132 @@ class PipelineBuilder:
             return gst.PadProbeReturn.OK
         return 1
 
+    def _capture_probe_frames(self, info: object, frame_store: object | None) -> None:
+        """Copy only configured task streams out of the DeepStream surface."""
+        if frame_store is None or not hasattr(frame_store, "should_capture"):
+            return
+        buffer = self._extract_probe_buffer(info)
+        pyds = self._runtime_factory.pyds
+        if buffer is None or pyds is None or not hasattr(pyds, "get_nvds_buf_surface"):
+            return
+        batch_meta = self._extract_nvds_batch_meta(info)
+        if batch_meta is None:
+            return
+        try:
+            import numpy as np
+
+            frame_list = getattr(batch_meta, "frame_meta_list", None)
+            for frame_meta in self._iterate_glist(frame_list, "NvDsFrameMeta"):
+                source_id = self._safe_int(
+                    self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0)),
+                    0,
+                )
+                stream_id = canonical_stream_id(source_id)
+                if not frame_store.should_capture(stream_id):
+                    continue
+                batch_id = self._safe_int(self._safe_get(frame_meta, "batch_id", -1), -1)
+                frame_id = self._safe_int(self._safe_get(frame_meta, "frame_num", 0), 0)
+                if batch_id < 0:
+                    continue
+                surface = pyds.get_nvds_buf_surface(hash(buffer), batch_id)
+                frame_store.put(stream_id, frame_id, np.array(surface, copy=True))
+        except Exception as exc:
+            self._log_probe_warning(
+                "frame_store",
+                "failed to capture ROI frame from DeepStream surface: %s",
+                exc,
+            )
+
     def _extract_probe_payload(self, info: object) -> object:
+        self._record_probe_metric("probe_batches")
         batch_meta = self._extract_nvds_batch_meta(info)
         if batch_meta is not None:
-            self._apply_osd_track_labels(batch_meta)
-            return self._batch_meta_to_payload(batch_meta)
+            if bool(getattr(self.settings.deepstream, "enable_osd", True)):
+                osd_stats = self._apply_osd_track_labels(batch_meta)
+                self._add_probe_metrics(**osd_stats)
+            if self._cpp_probe.available:
+                try:
+                    buffer = self._extract_probe_buffer(info)
+                    if buffer is not None:
+                        started_ns = time.perf_counter_ns()
+                        payload = self._cpp_probe.parse_buffer(buffer)
+                        self._normalize_native_track_ids(payload)
+                        self._add_probe_metrics(
+                            native_calls=1,
+                            native_total_ns=time.perf_counter_ns() - started_ns,
+                        )
+                        return payload
+                except Exception as exc:
+                    self._record_probe_metric("python_fallback_calls")
+                    self._log_probe_warning(
+                        "cpp_probe",
+                        "native C++ probe parser failed; falling back to Python traversal: %s",
+                        exc,
+                    )
+            started_ns = time.perf_counter_ns()
+            payload = self._batch_meta_to_payload(batch_meta)
+            self._add_probe_metrics(
+                python_calls=1,
+                python_total_ns=time.perf_counter_ns() - started_ns,
+            )
+            return payload
         if isinstance(info, dict):
             return info
         if hasattr(info, "payload"):
             return getattr(info, "payload")
         return {"raw_probe_info": info}
 
+    def _extract_probe_buffer(self, info: object) -> object | None:
+        if info is None:
+            return None
+        if hasattr(info, "get_buffer"):
+            return info.get_buffer()
+        if hasattr(info, "buffer"):
+            return getattr(info, "buffer")
+        if isinstance(info, dict):
+            return info.get("buffer")
+        return None
+
+    def _normalize_native_track_ids(self, payload: object) -> None:
+        """Apply the same local/global track contract as Python metadata parsing."""
+        if not isinstance(payload, dict):
+            return
+        frame_list = payload.get("frame_meta_list", [])
+        for frame in frame_list if isinstance(frame_list, list) else ():
+            if not isinstance(frame, dict):
+                continue
+            source_id = frame.get("source_id", frame.get("stream_id", 0))
+            source_index = self._safe_int(source_id, 0)
+            objects = frame.get("obj_meta_list", [])
+            tracks: list[dict[str, Any]] = []
+            for obj in objects if isinstance(objects, list) else ():
+                if not isinstance(obj, dict):
+                    continue
+                global_track_id = obj.get("object_id", obj.get("global_track_id", UNTRACKED_OBJECT_ID))
+                local_track_id = self._local_track_id(source_index, global_track_id)
+                obj["object_id"] = global_track_id
+                obj["global_track_id"] = global_track_id
+                obj["track_id"] = local_track_id
+                if self._is_valid_track_id(global_track_id):
+                    tracks.append(
+                        {
+                            "track_id": local_track_id,
+                            "global_track_id": global_track_id,
+                            "object_id": global_track_id,
+                            "class_id": obj.get("class_id", 0),
+                            "class_name": obj.get("class_name", obj.get("obj_label", "unknown")),
+                            "obj_label": obj.get("obj_label", obj.get("class_name", "unknown")),
+                            "confidence": obj.get("confidence", 0.0),
+                            "rect_params": obj.get("rect_params", {}),
+                        }
+                    )
+            frame["tracks"] = tracks
+
     def _extract_nvds_batch_meta(self, info: object) -> object | None:
         if info is None:
             return None
 
-        buffer = None
-        if hasattr(info, "get_buffer"):
-            buffer = info.get_buffer()
-        elif hasattr(info, "buffer"):
-            buffer = getattr(info, "buffer")
-        elif isinstance(info, dict):
-            buffer = info.get("buffer")
+        buffer = self._extract_probe_buffer(info)
 
         if buffer is None or self._runtime_factory.pyds is None:
             return None
@@ -912,6 +1099,8 @@ class PipelineBuilder:
                         "global_track_id": object_payload["object_id"],
                         "object_id": object_payload["object_id"],
                         "class_id": object_payload["class_id"],
+                        "class_name": object_payload["obj_label"],
+                        "obj_label": object_payload["obj_label"],
                         "confidence": object_payload["confidence"],
                         "rect_params": object_payload["rect_params"],
                     }
@@ -938,26 +1127,109 @@ class PipelineBuilder:
             "rect_params": rect_payload,
         }
 
-    def _apply_osd_track_labels(self, batch_meta: object) -> None:
+    def _apply_osd_track_labels(self, batch_meta: object) -> dict[str, int]:
+        stats = {"osd_frames": 0, "osd_objects": 0, "osd_updates": 0}
         frame_list = getattr(batch_meta, "frame_meta_list", None)
         for frame_meta in self._iterate_glist(frame_list, "NvDsFrameMeta"):
+            stats["osd_frames"] += 1
             source_id = self._safe_int(
                 self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0)),
                 0,
             )
             obj_list = getattr(frame_meta, "obj_meta_list", None)
+            active_track_ids: set[int] = set()
             for obj_meta in self._iterate_glist(obj_list, "NvDsObjectMeta"):
+                stats["osd_objects"] += 1
                 global_track_id = self._safe_get(obj_meta, "object_id", UNTRACKED_OBJECT_ID)
                 if not self._is_valid_track_id(global_track_id):
                     continue
                 local_track_id = self._local_track_id(source_id, global_track_id)
+                active_track_ids.add(self._safe_int(global_track_id, -1))
                 label = self._safe_get(obj_meta, "obj_label", "person")
                 if not label or label == "unknown":
                     label = "person"
                 confidence = float(self._safe_get(obj_meta, "confidence", 0.0))
+                state_key = (source_id, self._safe_int(global_track_id, -1))
+                annotation = self._plate_annotation(source_id, local_track_id)
+                previous_state = self._osd_last_label_state.get(state_key)
+                should_update = (
+                    previous_state is None
+                    or previous_state[0] != label
+                    or previous_state[2] != local_track_id
+                    or abs(previous_state[1] - confidence) >= OSD_CONFIDENCE_UPDATE_THRESHOLD
+                    or annotation is not None
+                )
                 text_params = getattr(obj_meta, "text_params", None)
-                if text_params is not None:
-                    text_params.display_text = f"{label} ID:{local_track_id} {confidence:.2f}"
+                if text_params is not None and should_update:
+                    plate_text = "" if annotation is None else f" PLATE:{annotation.get('plate_text', '')}"
+                    display_text = f"{label} ID:{local_track_id} {confidence:.2f}{plate_text}"
+                    if getattr(text_params, "display_text", None) != display_text:
+                        text_params.display_text = display_text
+                        stats["osd_updates"] += 1
+                if annotation is not None:
+                    self._add_plate_osd(frame_meta, annotation)
+                self._osd_last_label_state[state_key] = (label, confidence, local_track_id)
+            for state_key in tuple(self._osd_last_label_state):
+                if state_key[0] == source_id and state_key[1] not in active_track_ids:
+                    del self._osd_last_label_state[state_key]
+        return stats
+
+    def _add_plate_osd(self, frame_meta: object, annotation: dict[str, Any]) -> None:
+        pyds = self._runtime_factory.pyds
+        if pyds is None or not hasattr(pyds, "nvds_acquire_display_meta_from_pool"):
+            return
+        bbox = annotation.get("plate_bbox") or {}
+        try:
+            display_meta = pyds.nvds_acquire_display_meta_from_pool(frame_meta)
+            display_meta.num_rects = 1
+            rect = display_meta.rect_params[0]
+            rect.left = float(bbox.get("left", 0.0))
+            rect.top = float(bbox.get("top", 0.0))
+            rect.width = float(bbox.get("width", 0.0))
+            rect.height = float(bbox.get("height", 0.0))
+            rect.border_width = 3
+            rect.has_bg_color = 0
+            rect.border_color.set(0.0, 1.0, 0.0, 1.0)
+            display_meta.num_labels = 1
+            text = display_meta.text_params[0]
+            text.display_text = f"{annotation.get('plate_text', '')} {float(annotation.get('confidence', 0.0)):.2f}"
+            text.x_offset = int(rect.left)
+            text.y_offset = max(int(rect.top) - 24, 0)
+            text.font_params.font_name = "Sans"
+            text.font_params.font_size = 16
+            text.font_params.font_color.set(1.0, 1.0, 0.0, 1.0)
+            text.set_bg_clr = 1
+            text.text_bg_clr.set(0.0, 0.0, 0.0, 0.7)
+            pyds.nvds_add_display_meta_to_frame(frame_meta, display_meta)
+        except Exception as exc:
+            self._log_probe_warning("plate_osd", "failed to add plate OSD: %s", exc)
+
+    def _record_probe_metric(self, key: str, value: int = 1) -> None:
+        with self._probe_metrics_lock:
+            self._probe_metrics_state[key] = self._probe_metrics_state.get(key, 0) + value
+
+    def _add_probe_metrics(self, **values: int) -> None:
+        with self._probe_metrics_lock:
+            for key, value in values.items():
+                self._probe_metrics_state[key] = self._probe_metrics_state.get(key, 0) + int(value)
+
+    def probe_metrics(self) -> dict[str, Any]:
+        with self._probe_metrics_lock:
+            state = dict(self._probe_metrics_state)
+        native_calls = state["native_calls"]
+        python_calls = state["python_calls"]
+        return {
+            "probe_batches": state["probe_batches"],
+            "native_calls": native_calls,
+            "native_avg_ms": round(state["native_total_ns"] / max(native_calls, 1) / 1_000_000, 3),
+            "python_calls": python_calls,
+            "python_avg_ms": round(state["python_total_ns"] / max(python_calls, 1) / 1_000_000, 3),
+            "python_fallback_calls": state["python_fallback_calls"],
+            "native_ratio": round(native_calls / max(state["probe_batches"], 1), 4),
+            "osd_frames": state["osd_frames"],
+            "osd_objects": state["osd_objects"],
+            "osd_updates": state["osd_updates"],
+        }
 
     def _local_track_id(self, source_id: object, global_track_id: object) -> int:
         if not self._is_valid_track_id(global_track_id):

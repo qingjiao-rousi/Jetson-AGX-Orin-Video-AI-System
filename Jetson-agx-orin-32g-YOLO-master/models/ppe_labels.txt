@@ -1,0 +1,17 @@
+barricade
+dumpster
+excavators
+gloves
+hardhat
+mask
+no-hardhat
+no-mask
+no-safety vest
+person
+safety net
+safety shoes
+safety vest
+dump truck
+mini-van
+truck
+wheel loader

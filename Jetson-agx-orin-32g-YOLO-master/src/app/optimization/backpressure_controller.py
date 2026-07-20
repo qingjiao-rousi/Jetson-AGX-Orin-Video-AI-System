@@ -31,6 +31,9 @@ class BackpressureController:
     # ──── 热路径：每帧调用 ────
     def observe(self, result: object) -> None:
         """生产者端：每产生一个 FrameResult 调用一次。"""
+        if not getattr(self._settings, "enable_backpressure", True):
+            self._backpressure_active = False
+            return
         self._observations += 1
         self._last_result = result
 
@@ -49,6 +52,8 @@ class BackpressureController:
 
     def mark_consumed(self) -> None:
         """消费者端：每次写出/处理完一条结果调用一次。"""
+        if not getattr(self._settings, "enable_backpressure", True):
+            return
         self._consume_timestamps.append(time.monotonic())
         self._pending_count = max(0, len(self._produce_timestamps) - len(self._consume_timestamps))
 
@@ -62,6 +67,8 @@ class BackpressureController:
 
     def queue_depth_ratio(self) -> float:
         """返回当前队列深度比例 (0.0 ~ 1.0)，供 FpsController 参考。"""
+        if not getattr(self._settings, "enable_backpressure", True):
+            return 0.0
         max_q = max(getattr(self._settings, "max_queue_size", 32), 1)
         return min(1.0, self._pending_count / max_q)
 

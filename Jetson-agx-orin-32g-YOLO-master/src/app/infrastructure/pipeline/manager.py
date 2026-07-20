@@ -9,10 +9,11 @@ from app.infrastructure.pipeline.probes import ProbeRegistry
 
 
 class PipelineManager:
-    def __init__(self, builder, probes: ProbeRegistry | None = None, meta_parser=None) -> None:
+    def __init__(self, builder, probes: ProbeRegistry | None = None, meta_parser=None, frame_store=None) -> None:
         self._builder = builder
         self._probes = probes or ProbeRegistry()
         self._meta_parser = meta_parser
+        self._frame_store = frame_store
         self._pipeline: PipelineBlueprint | None = None
         self._runtime: dict | None = None
         self._running = False
@@ -22,6 +23,15 @@ class PipelineManager:
         self._bus_watch_attached = False
         self._stop_event = Event()
         self._bus_thread: Thread | None = None
+        self._frame_gate = None
+
+    def set_frame_gate(self, gate) -> None:
+        """Set a pre-inference buffer gate, typically the FPS controller."""
+        self._frame_gate = gate
+
+    def register_plate_annotation(self, stream_id: str, track_id: int, event: dict) -> None:
+        if hasattr(self._builder, "register_plate_annotation"):
+            self._builder.register_plate_annotation(stream_id, track_id, event)
 
     def start(self) -> None:
         if self._running:
@@ -29,8 +39,9 @@ class PipelineManager:
         self._runtime = self._builder.build_runtime()
         self._runtime["probe_registry"] = self._probes
         self._runtime["meta_parser"] = self._meta_parser
-        if hasattr(self._builder, "attach_probe_points"):
-            self._runtime["probe_attachments"] = self._builder.attach_probe_points(self._runtime)
+        self._runtime["frame_store"] = self._frame_store
+        self._runtime["frame_gate"] = self._frame_gate
+        self._register_probe_points()
         self._pipeline = self._runtime["blueprint"]
         self._stop_event.clear()
         self._attach_bus_watch()
@@ -129,6 +140,17 @@ class PipelineManager:
             "running": self._running,
             "source_count": self._pipeline.source_count,
             "app_name": self._pipeline.app_name,
+            "sources": tuple(
+                {
+                    "name": source.name,
+                    "kind": source.kind,
+                    "scene": getattr(source, "scene", "normal"),
+                    "priority": getattr(source, "priority", "medium"),
+                    "zones": tuple(getattr(source, "zones", ())),
+                    "capabilities": tuple(getattr(source, "capabilities", ())),
+                }
+                for source in self._pipeline.sources
+            ),
             "nodes": tuple(node.name for node in self._pipeline.nodes),
             "node_specs": tuple(
                 {
@@ -241,8 +263,9 @@ class PipelineManager:
         self._runtime = self._builder.build_runtime_with_fake_output()
         self._runtime["probe_registry"] = self._probes
         self._runtime["meta_parser"] = self._meta_parser
-        if hasattr(self._builder, "attach_probe_points"):
-            self._runtime["probe_attachments"] = self._builder.attach_probe_points(self._runtime)
+        self._runtime["frame_store"] = self._frame_store
+        self._runtime["frame_gate"] = self._frame_gate
+        self._register_probe_points()
         self._pipeline = self._runtime["blueprint"]
         self._bus_watch_attached = False
         self._attach_bus_watch()
@@ -250,6 +273,19 @@ class PipelineManager:
         self._last_warning = logging_message
         self._last_error = None
         return True
+
+    def _register_probe_points(self) -> tuple[dict, ...]:
+        """Register probes once, after their registry/parser dependencies exist."""
+        if self._runtime is None:
+            return ()
+        if self._runtime.get("probe_points_registered", False):
+            return self._runtime.get("probe_attachments", ())
+        attachments: tuple[dict, ...] = ()
+        if hasattr(self._builder, "attach_probe_points"):
+            attachments = self._builder.attach_probe_points(self._runtime)
+        self._runtime["probe_attachments"] = attachments
+        self._runtime["probe_points_registered"] = True
+        return attachments
 
     def _on_bus_message(self, bus, message) -> None:
         _ = bus

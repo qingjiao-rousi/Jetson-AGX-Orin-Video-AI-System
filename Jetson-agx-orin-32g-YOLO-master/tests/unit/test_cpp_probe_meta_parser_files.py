@@ -37,6 +37,7 @@ class CppProbeMetaParserFileTests(unittest.TestCase):
         self.assertIn("parse_nvds_batch_meta", header)
         self.assertIn('extern "C"', header)
         self.assertIn("probe_parse_nvds_batch_meta_json", header)
+        self.assertIn("probe_parse_gst_buffer_json", header)
         self.assertIn("nvdsmeta.h", source)
         self.assertIn("NVDS_VERSION_MAJOR", cmake)
         self.assertIn("probe_handler", cmake)

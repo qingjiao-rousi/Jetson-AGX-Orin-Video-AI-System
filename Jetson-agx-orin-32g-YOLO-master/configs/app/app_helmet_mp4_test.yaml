@@ -1,0 +1,95 @@
+app:
+  app_name: deepstream-yolov8-helmet-mp4-test
+  source_count: 1
+  enable_web: false
+
+scenes:
+  production:
+    description: 生产作业区
+  normal:
+    description: 普通监控区
+
+models:
+  primary:
+    backend: deepstream_nvinfer
+    engine: models/yolov8s.engine
+
+  helmet:
+    backend: tensorrt
+    engine: models/ppe_yolov8n_dynamic_fp16.engine
+    labels: models/ppe_labels.txt
+    input_width: 640
+    input_height: 640
+    confidence_threshold: 0.25
+    nms_iou_threshold: 0.45
+
+model_tasks:
+  helmet:
+    model: helmet
+    trigger_classes: [person]
+    interval: 2
+    min_track_frames: 3
+
+capabilities:
+  helmet_compliance:
+    tasks: [helmet]
+
+sources:
+  - name: helmet_mp4_01
+    kind: file
+    uri: /home/nvidia/Desktop/YOLO/video/1.mp4
+    enabled: true
+    scene: production
+    priority: high
+    capabilities: [helmet_compliance]
+
+web:
+  enabled: false
+  host: 127.0.0.1
+  port: 8080
+  enable_status_api: true
+  enable_debug_api: true
+  enable_logs_api: true
+  refresh_interval_ms: 1000
+  log_buffer_size: 200
+
+logging:
+  level: INFO
+  file_path: outputs/helmet_mp4_test/app.log
+  console: true
+
+output:
+  jsonl_path: outputs/helmet_mp4_test/results.jsonl
+  events_jsonl_path: outputs/helmet_mp4_test/events.jsonl
+  metrics_jsonl_path: outputs/helmet_mp4_test/runtime_metrics.jsonl
+  enable_jsonl: true
+  enable_mqtt: false
+  enable_kafka: false
+
+optimization:
+  max_queue_size: 32
+  fps_min: 5.0
+  fps_max: 30.0
+  enable_fps_control: false
+  enable_backpressure: true
+  enable_drop_old_frames: true
+  stale_after_seconds: 5.0
+
+deepstream:
+  batch_size: 1
+  batched_push_timeout_us: 40000
+  inference_width: 1280
+  inference_height: 720
+  infer_interval: 1
+  enable_tracker: true
+  enable_osd: true
+  enable_tiler: false
+  output_sink: file
+  output_url: rtmp://127.0.0.1/live/stream
+  output_video_path: outputs/helmet_mp4_test/output.mp4
+  model_engine_path: models/yolov8s.engine
+  custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+  tracker_config_path: configs/deepstream/tracker_iou.yml
+  probe_handler_path: build/probe_handler/libprobe_handler.so
+  infer_config_path: configs/deepstream/infer_primary_yolo_minimal.txt
+  streammux_config_path: configs/deepstream/streammux.yaml

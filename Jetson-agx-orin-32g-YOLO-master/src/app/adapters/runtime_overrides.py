@@ -36,6 +36,7 @@ def apply_runtime_overrides(
         output = replace(
             output,
             jsonl_path=output_dir / "results.jsonl",
+            events_jsonl_path=output_dir / "events.jsonl",
             metrics_jsonl_path=output_dir / "runtime_metrics.jsonl",
         )
         deepstream = replace(
@@ -92,6 +93,7 @@ def apply_runtime_overrides(
             confidence_threshold=confidence_threshold,
             person_only=person_only,
             batch_size=deepstream.batch_size,
+            infer_interval=deepstream.infer_interval,
             runtime_dir=runtime_dir,
         )
         deepstream = replace(deepstream, infer_config_path=runtime_infer_config)
@@ -114,6 +116,7 @@ def _write_runtime_infer_config(
     confidence_threshold: float | None,
     person_only: bool,
     batch_size: int,
+    infer_interval: int,
     runtime_dir: Path | None = None,
 ) -> Path:
     text = base_path.read_text(encoding="utf-8")
@@ -121,6 +124,7 @@ def _write_runtime_infer_config(
     updated: list[str] = []
     saw_threshold = False
     saw_filter = False
+    saw_interval = False
 
     for line in lines:
         stripped = line.strip()
@@ -131,6 +135,11 @@ def _write_runtime_infer_config(
 
         if stripped.startswith("batch-size="):
             updated.append(f"batch-size={max(int(batch_size), 1)}")
+            continue
+
+        if stripped.startswith("interval="):
+            saw_interval = True
+            updated.append(f"interval={max(int(infer_interval), 0)}")
             continue
 
         if stripped.startswith("pre-cluster-threshold="):
@@ -154,6 +163,10 @@ def _write_runtime_infer_config(
     if not saw_filter and person_only:
         insert_at = _find_property_insert_index(updated)
         updated.insert(insert_at, f"filter-out-class-ids={PERSON_FILTER_OUT_CLASS_IDS}")
+
+    if not saw_interval:
+        insert_at = _find_property_insert_index(updated)
+        updated.insert(insert_at, f"interval={max(int(infer_interval), 0)}")
 
     if confidence_threshold is not None and not saw_threshold:
         updated.extend(["", "[class-attrs-all]", f"pre-cluster-threshold={confidence_threshold:.4f}"])

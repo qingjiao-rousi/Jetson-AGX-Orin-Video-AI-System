@@ -366,6 +366,72 @@ class BuilderProbeDispatchTests(unittest.TestCase):
 
         self.assertEqual(FakeObject.text_params.display_text, "person ID:1 0.90")
 
+    def test_osd_label_update_skips_unchanged_display_text(self) -> None:
+        builder = PipelineBuilder(AppSettings())
+        builder._runtime_factory._pyds = None
+
+        class TextParams:
+            display_text = "person ID:1 0.90"
+
+        class Obj:
+            object_id = 42
+            obj_label = "person"
+            confidence = 0.9
+            text_params = TextParams()
+
+        class Node:
+            data = Obj()
+            next = None
+
+        class Frame:
+            source_id = 0
+            obj_meta_list = Node()
+
+        class Batch:
+            frame_meta_list = Node()
+
+        Batch.frame_meta_list.data = Frame()
+        stats = builder._apply_osd_track_labels(Batch())
+        self.assertEqual(stats["osd_objects"], 1)
+        self.assertEqual(stats["osd_updates"], 0)
+
+    def test_osd_label_update_ignores_small_confidence_jitter(self) -> None:
+        builder = PipelineBuilder(AppSettings())
+        builder._runtime_factory._pyds = None
+
+        class TextParams:
+            display_text = ""
+
+        text_params = TextParams()
+
+        class Obj:
+            object_id = 42
+            obj_label = "person"
+            confidence = 0.90
+            text_params = None
+
+        Obj.text_params = text_params
+
+        class Node:
+            next = None
+
+        class Frame:
+            source_id = 0
+            obj_meta_list = Node()
+
+        class Batch:
+            frame_meta_list = Node()
+
+        Node.data = Obj()
+        Batch.frame_meta_list.data = Frame()
+        first = builder._apply_osd_track_labels(Batch())
+
+        Obj.confidence = 0.92
+        second = builder._apply_osd_track_labels(Batch())
+
+        self.assertEqual(first["osd_updates"], 1)
+        self.assertEqual(second["osd_updates"], 0)
+
     def test_probe_uses_independent_local_track_ids_per_stream(self) -> None:
         builder = PipelineBuilder(AppSettings())
         builder._runtime_factory._pyds = None
@@ -376,6 +442,39 @@ class BuilderProbeDispatchTests(unittest.TestCase):
         self.assertEqual(builder._local_track_id(1, 100), 1)
         self.assertEqual(builder._local_track_id(1, 101), 2)
         self.assertEqual(builder._local_track_id(2, 42), 1)
+
+    def test_native_track_ids_match_python_local_global_contract(self) -> None:
+        builder = PipelineBuilder(AppSettings())
+        payload = {
+            "frame_meta_list": [
+                {
+                    "source_id": 2,
+                    "obj_meta_list": [
+                        {
+                            "object_id": 100,
+                            "global_track_id": 100,
+                            "track_id": 100,
+                            "class_id": 0,
+                            "confidence": 0.8,
+                            "rect_params": {},
+                        },
+                        {
+                            "object_id": 0xFFFFFFFFFFFFFFFF,
+                            "global_track_id": 0xFFFFFFFFFFFFFFFF,
+                            "track_id": 0xFFFFFFFFFFFFFFFF,
+                        },
+                    ],
+                }
+            ]
+        }
+
+        builder._normalize_native_track_ids(payload)
+
+        frame = payload["frame_meta_list"][0]
+        self.assertEqual(frame["obj_meta_list"][0]["track_id"], 1)
+        self.assertEqual(frame["obj_meta_list"][0]["global_track_id"], 100)
+        self.assertEqual(len(frame["tracks"]), 1)
+        self.assertEqual(frame["tracks"][0]["track_id"], 1)
 
     def test_probe_batch_meta_extract_logs_exceptions_with_rate_limit(self) -> None:
         builder = PipelineBuilder(AppSettings())

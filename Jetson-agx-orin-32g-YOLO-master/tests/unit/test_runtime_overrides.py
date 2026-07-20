@@ -64,6 +64,19 @@ class RuntimeOverrideTests(unittest.TestCase):
             self.assertIn("filter-out-class-ids=1;2;3", runtime_text)
             self.assertIn("pre-cluster-threshold=0.3000", runtime_text)
             self.assertIn("batch-size=1", runtime_text)
+            self.assertIn("interval=1", runtime_text)
+
+    def test_runtime_override_can_restore_per_frame_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            infer_config = Path(tmp) / "infer.txt"
+            infer_config.write_text("[property]\ninterval=1\n", encoding="utf-8")
+            settings = AppSettings(
+                deepstream=DeepStreamSettings(infer_config_path=infer_config, infer_interval=0)
+            )
+
+            updated = apply_runtime_overrides(settings)
+
+            self.assertIn("interval=0", updated.deepstream.infer_config_path.read_text(encoding="utf-8"))
 
     def test_all_classes_comments_person_filter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

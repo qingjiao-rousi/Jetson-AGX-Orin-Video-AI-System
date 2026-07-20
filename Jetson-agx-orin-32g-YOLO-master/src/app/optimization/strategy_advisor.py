@@ -8,10 +8,10 @@ from typing import Any
 @dataclass
 class OptimizationAdvisor:
     """
-    Placeholder optimization advisor.
+    Runtime-aware optimization advisor.
 
-    It does not change runtime behavior directly in phase one. It only inspects
-    the current snapshot and exposes what can be optimized next.
+    It reports the controls that are active and leaves policy decisions to the
+    FPS gate and backpressure controller.
     """
 
     def recommend(self, snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -53,8 +53,8 @@ class OptimizationAdvisor:
             actions.append(
                 {
                     "priority": "medium",
-                    "action": "activate_backpressure_policy",
-                    "reason": "Backpressure configuration is present and can later be connected to real queue depth signals.",
+                    "action": "monitor_backpressure_policy",
+                    "reason": "Backpressure is connected to the asynchronous result writer completion signal.",
                 }
             )
 
@@ -83,7 +83,7 @@ class OptimizationAdvisor:
         )
 
         return {
-            "mode": "advisory_only",
+            "mode": "runtime_controls_with_advisory_recommendations",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "action_count": len(actions),
             "actions": actions,

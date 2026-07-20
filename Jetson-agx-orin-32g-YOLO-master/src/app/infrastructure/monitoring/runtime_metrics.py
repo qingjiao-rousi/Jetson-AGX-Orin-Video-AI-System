@@ -33,6 +33,14 @@ class RuntimeMetricsRecorder:
         self._last_emit_at = 0.0
         self._total_frames = 0
         self._streams: dict[str, dict[str, Any]] = {}
+        self._probe_metrics_provider = None
+        self._control_metrics_provider = None
+
+    def set_probe_metrics_provider(self, provider) -> None:
+        self._probe_metrics_provider = provider
+
+    def set_control_metrics_provider(self, provider) -> None:
+        self._control_metrics_provider = provider
 
     def start(self) -> None:
         self._started_at = time.monotonic()
@@ -116,6 +124,8 @@ class RuntimeMetricsRecorder:
             "processing_fps": round(self._total_frames / elapsed, 3),
             "process": _process_snapshot(),
             "gpu": gpu_snapshot or {},
+            "probe": self._probe_metrics_provider() if self._probe_metrics_provider else {},
+            "controls": self._control_metrics_provider() if self._control_metrics_provider else {},
             "streams": {
                 stream_id: _stream_payload(stream, now)
                 for stream_id, stream in sorted(self._streams.items())

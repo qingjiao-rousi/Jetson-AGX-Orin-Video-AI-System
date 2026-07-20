@@ -35,6 +35,13 @@ class FpsController:
     # ──── 热路径：每帧调用 — 必须轻量 ────
     def observe(self, result: object) -> bool:
         """返回 True 表示建议丢弃当前帧。"""
+        return self.should_drop_frame()
+
+    def should_drop_frame(self) -> bool:
+        """Decide before nvinfer whether the current buffer should be dropped."""
+        if not getattr(self._settings, "enable_fps_control", True):
+            self._last_drop_decision = False
+            return False
         self._total_frames += 1
 
         gpu_pct = self._read_gpu()

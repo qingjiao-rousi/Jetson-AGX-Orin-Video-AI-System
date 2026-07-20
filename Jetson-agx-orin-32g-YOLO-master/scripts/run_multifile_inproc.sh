@@ -18,6 +18,9 @@ Optional environment overrides:
   VIDEO_GLOB=*.mp4
   SOURCE_COUNT=8
   OUTPUT_SINK=file
+  ENABLE_OSD=1
+  ENABLE_FPS_CONTROL=1
+  ENABLE_BACKPRESSURE=1
   OUTPUT_URL=rtmp://127.0.0.1/live/stream
   OUTPUT_WIDTH=640
   OUTPUT_HEIGHT=640
@@ -51,6 +54,9 @@ OUTPUT_DIR="${2:-outputs/multifile_inproc}"
 VIDEO_GLOB="${VIDEO_GLOB:-*.mp4}"
 SOURCE_COUNT="${SOURCE_COUNT:-8}"
 OUTPUT_SINK="${OUTPUT_SINK:-file}"
+ENABLE_OSD="${ENABLE_OSD:-1}"
+ENABLE_FPS_CONTROL="${ENABLE_FPS_CONTROL:-1}"
+ENABLE_BACKPRESSURE="${ENABLE_BACKPRESSURE:-1}"
 OUTPUT_URL="${OUTPUT_URL:-rtmp://127.0.0.1/live/stream}"
 OUTPUT_WIDTH="${OUTPUT_WIDTH:-640}"
 OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-640}"
@@ -74,6 +80,12 @@ if [ "$OUTPUT_SINK" != "fake" ] && [ "$OUTPUT_SINK" != "file" ] && [ "$OUTPUT_SI
     echo "OUTPUT_SINK must be one of: fake, file, rtmp, rtsp" >&2
     exit 1
 fi
+if [ "$ENABLE_OSD" != "0" ] && [ "$ENABLE_OSD" != "1" ]; then
+    echo "ENABLE_OSD must be 0 or 1: $ENABLE_OSD" >&2
+    exit 1
+fi
+if [ "$ENABLE_FPS_CONTROL" != "0" ] && [ "$ENABLE_FPS_CONTROL" != "1" ]; then exit 1; fi
+if [ "$ENABLE_BACKPRESSURE" != "0" ] && [ "$ENABLE_BACKPRESSURE" != "1" ]; then exit 1; fi
 
 mkdir -p "$OUTPUT_DIR/.runtime"
 
@@ -145,8 +157,8 @@ optimization:
   max_queue_size: 32
   fps_min: 5.0
   fps_max: 30.0
-  enable_fps_control: false
-  enable_backpressure: true
+  enable_fps_control: $([ "$ENABLE_FPS_CONTROL" = "1" ] && echo true || echo false)
+  enable_backpressure: $([ "$ENABLE_BACKPRESSURE" = "1" ] && echo true || echo false)
 
 deepstream:
   batch_size: $SOURCE_COUNT
@@ -154,7 +166,7 @@ deepstream:
   inference_width: $OUTPUT_WIDTH
   inference_height: $OUTPUT_HEIGHT
   enable_tracker: true
-  enable_osd: true
+  enable_osd: $([ "$ENABLE_OSD" = "1" ] && echo true || echo false)
   enable_tiler: $([ "$ENABLE_TILER" = "1" ] && echo true || echo false)
   tiler_rows: $TILER_ROWS
   tiler_columns: $TILER_COLUMNS
@@ -179,6 +191,9 @@ echo "Video glob: $VIDEO_GLOB"
 echo "Source count: $SOURCE_COUNT"
 echo "Output directory: $OUTPUT_DIR"
 echo "Output sink: $OUTPUT_SINK"
+echo "OSD: $ENABLE_OSD"
+echo "FPS control: $ENABLE_FPS_CONTROL"
+echo "Backpressure: $ENABLE_BACKPRESSURE"
 echo "Tiler: $ENABLE_TILER (${TILER_ROWS}x${TILER_COLUMNS}, ${TILER_WIDTH}x${TILER_HEIGHT})"
 echo "Runtime config: $CONFIG_PATH"
 echo "JSONL: $JSONL_PATH"

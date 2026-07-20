@@ -157,6 +157,7 @@ class MetaParser:
                     global_track_id=self._parse_optional_int(
                         item_dict.get("global_track_id", item_dict.get("object_id"))
                     ),
+                    class_name=str(item_dict.get("class_name") or item_dict.get("obj_label") or "unknown"),
                 )
             )
         return tracks

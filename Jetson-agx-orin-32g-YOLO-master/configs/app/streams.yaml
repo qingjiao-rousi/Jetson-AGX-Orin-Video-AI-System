@@ -23,4 +23,3 @@ sources:
     kind: rtsp
     uri: rtsp://127.0.0.1:8554/stream6
     enabled: true
-
