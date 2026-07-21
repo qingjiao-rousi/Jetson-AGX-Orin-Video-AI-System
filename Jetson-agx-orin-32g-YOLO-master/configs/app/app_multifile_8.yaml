@@ -189,6 +189,7 @@ optimization:
   fps_max: 30.0
   enable_fps_control: false
   enable_backpressure: true
+  enable_drop_old_frames: true
 
 deepstream:
   batch_size: 8

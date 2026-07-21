@@ -32,9 +32,12 @@ class ProbeRegistry:
         self.frame_result_handler(result)
 
     def emit_probe_payload(self, payload: object, parser) -> None:
-        result = parser.parse(payload)
-        self._record_event("frame_result_emitted")
-        self.emit_frame_result(result)
+        results = (
+            parser.parse_many(payload) if hasattr(parser, "parse_many") else (parser.parse(payload),)
+        )
+        for result in results:
+            self._record_event("frame_result_emitted")
+            self.emit_frame_result(result)
 
     def events(self) -> tuple[str, ...]:
         return tuple(self._events)

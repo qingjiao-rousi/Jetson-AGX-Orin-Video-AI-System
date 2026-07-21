@@ -49,6 +49,7 @@ lines = 0
 detection_lines = 0
 bad_classes = set()
 bad_confidence = 0
+tracker_only_confidence = 0
 bad_boxes = 0
 track_counts = {}
 
@@ -72,6 +73,10 @@ with path.open("r", encoding="utf-8") as f:
             if class_id != 0 or class_name != "person":
                 bad_classes.add((class_id, class_name))
             confidence = float(det.get("confidence", 0.0))
+            # DeepStream tracker marks propagated, non-detector objects as -0.1.
+            if confidence == -0.1:
+                tracker_only_confidence += 1
+                continue
             if confidence < 0.0 or confidence > 1.0:
                 bad_confidence += 1
             bbox = det.get("bbox", {})
@@ -81,6 +86,7 @@ with path.open("r", encoding="utf-8") as f:
 print(f"JSONL lines: {lines}")
 print(f"Lines with detections: {detection_lines}")
 print(f"Unique track IDs: {len(track_counts)}")
+print(f"Tracker-propagated detections (confidence=-0.1): {tracker_only_confidence}")
 if bad_classes:
     print(f"[FAIL] Non-person classes found: {sorted(bad_classes)}")
     raise SystemExit(1)

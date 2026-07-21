@@ -63,6 +63,27 @@ class ProbeRegistryTests(unittest.TestCase):
         self.assertEqual(len(registry.events()), 100)
         self.assertEqual(registry.events()[-1], "frame_result_emitted")
 
+    def test_emit_probe_payload_emits_every_frame_in_a_batch(self) -> None:
+        registry = ProbeRegistry()
+        parser = MetaParser()
+        captured = []
+        registry.register_frame_result_handler(captured.append)
+
+        registry.emit_probe_payload(
+            {
+                "frame_meta_list": [
+                    {"source_id": 0, "frame_id": 10},
+                    {"source_id": 1, "frame_id": 20},
+                ]
+            },
+            parser,
+        )
+
+        self.assertEqual(
+            [(item.stream_id, item.frame_id) for item in captured],
+            [("stream-0", 10), ("stream-1", 20)],
+        )
+
 
 class MetaParserTests(unittest.TestCase):
     def test_stream_ids_are_normalized_across_deepstream_and_simulator_forms(self) -> None:

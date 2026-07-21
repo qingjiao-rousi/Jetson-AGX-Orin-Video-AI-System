@@ -8,18 +8,21 @@ from app.domain.entities import BoundingBox, Detection, FrameResult, Track, cano
 
 class MetaParser:
     def parse(self, raw_meta: object) -> FrameResult:
+        results = self.parse_many(raw_meta)
+        return results[0]
+
+    def parse_many(self, raw_meta: object) -> list[FrameResult]:
         payload = self._normalize(raw_meta)
-        batch_payload = self._unwrap_batch_payload(payload)
-        frame_payload = batch_payload or payload
-        detections = self._parse_detections(frame_payload)
-        tracks = self._parse_tracks(frame_payload)
-        timestamp = self._parse_frame_timestamp(frame_payload)
+        frame_payloads = self._batch_frame_payloads(payload) or [payload]
+        return [self._parse_frame(frame_payload, payload) for frame_payload in frame_payloads]
+
+    def _parse_frame(self, frame_payload: dict[str, Any], payload: dict[str, Any]) -> FrameResult:
         return FrameResult(
             stream_id=self._parse_stream_id(frame_payload),
             frame_id=self._parse_frame_id(frame_payload),
-            timestamp=timestamp,
-            detections=detections,
-            tracks=tracks,
+            timestamp=self._parse_frame_timestamp(frame_payload),
+            detections=self._parse_detections(frame_payload),
+            tracks=self._parse_tracks(frame_payload),
             extra=dict(payload.get("extra", {})),
         )
 
@@ -197,27 +200,15 @@ class MetaParser:
         except (TypeError, ValueError):
             return None
 
-    def _unwrap_batch_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def _batch_frame_payloads(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         frame_meta = payload.get("frame_meta")
         if isinstance(frame_meta, dict):
-            return frame_meta
+            return [frame_meta]
 
         frame_meta_list = payload.get("frame_meta_list")
         if frame_meta_list is None:
-            return None
-
-        first_frame = self._first_from_iterable(frame_meta_list)
-        if first_frame is None:
-            return None
-
-        return self._normalize(first_frame)
-
-    def _first_from_iterable(self, value: object) -> object | None:
-        if isinstance(value, list):
-            return value[0] if value else None
-        if hasattr(value, "data") and hasattr(value, "next"):
-            return getattr(value, "data", None)
-        return None
+            return []
+        return [self._normalize(frame) for frame in self._iterate_items(frame_meta_list)]
 
     def _iterate_items(self, value: object):
         if isinstance(value, list):

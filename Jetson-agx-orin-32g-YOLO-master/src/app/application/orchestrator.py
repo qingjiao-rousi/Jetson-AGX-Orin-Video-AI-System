@@ -143,12 +143,11 @@ class Orchestrator:
     def on_helmet_event(self, event: HelmetEvent) -> None:
         if self.event_writer is not None and hasattr(self.event_writer, "write"):
             self.event_writer.write(event)
-        logging.warning(
-            "helmet violation: stream=%s track=%s frame=%s confidence=%.3f",
+        logging.debug(
+            "helmet violation: stream=%s track=%s frame=%s",
             event.stream_id,
             event.track_id,
             event.frame_id,
-            event.confidence,
         )
 
     def on_vehicle_event(self, event: VehiclePassEvent) -> None:
@@ -169,12 +168,11 @@ class Orchestrator:
                     },
                 },
             )
-        logging.info(
-            "vehicle pass: stream=%s track=%s plate=%s confidence=%.3f",
+        logging.debug(
+            "vehicle pass: stream=%s track=%s plate=%s",
             event.stream_id,
             event.track_id,
             event.plate_text,
-            event.confidence,
         )
 
     def on_pose_event(self, event: PoseEvent) -> None:
@@ -184,9 +182,9 @@ class Orchestrator:
     def on_fire_smoke_event(self, event: FireSmokeEvent) -> None:
         if self.event_writer is not None and hasattr(self.event_writer, "write"):
             self.event_writer.write(event)
-        logging.warning(
-            "fire/smoke detection: stream=%s frame=%s status=%s confidence=%.3f",
-            event.stream_id, event.frame_id, event.status, event.confidence,
+        logging.debug(
+            "fire/smoke detection: stream=%s frame=%s status=%s",
+            event.stream_id, event.frame_id, event.status,
         )
 
     def pipeline_state(self) -> dict[str, Any]:
