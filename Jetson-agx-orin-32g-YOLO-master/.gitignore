@@ -12,4 +12,11 @@ build/
 *.pid
 auto.key
 auto.crt
+*.key
+*.crt
+*.pem
+*.p12
+*.pfx
+calibration/
+*.cache
 *.engine.before_batch8

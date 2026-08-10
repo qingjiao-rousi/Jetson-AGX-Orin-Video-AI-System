@@ -72,7 +72,7 @@ class OptimizationAdvisor:
                 {
                     "priority": "low",
                     "action": "fp16_to_int8",
-                    "reason": "Inference precision can later be upgraded from FP16 to INT8 after calibration resources are ready.",
+                    "reason": "INT8 engines are available; compare them with a rerun FP16 baseline on the same input and metrics contract.",
                 },
                 {
                     "priority": "low",

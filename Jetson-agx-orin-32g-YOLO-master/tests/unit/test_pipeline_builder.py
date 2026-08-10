@@ -242,11 +242,17 @@ class PipelineBuilderRuntimeTests(unittest.TestCase):
             self.assertEqual(node_by_name["tiler"].element, "nvmultistreamtiler")
             self.assertEqual(node_by_name["tiler"].properties["rows"], 1)
             self.assertEqual(node_by_name["tiler"].properties["columns"], 2)
-            self.assertIn(("tracker", "tiler"), blueprint.links)
+            self.assertIn(("tracker", "pre-tiler-convert"), blueprint.links)
+            self.assertIn(("pre-tiler-convert", "pre-tiler-caps"), blueprint.links)
+            self.assertIn(("pre-tiler-caps", "tiler"), blueprint.links)
             self.assertIn(("tiler", "pre-osd-convert"), blueprint.links)
             self.assertEqual(
                 blueprint.probes,
-                (("primary-infer", "sink"), ("pre-osd-caps", "sink")),
+                (
+                    ("primary-infer", "sink"),
+                    ("tracker", "src"),
+                    ("pre-tiler-caps", "sink"),
+                ),
             )
 
     def test_rtsp_output_uses_h264_payloader_and_configured_url(self) -> None:

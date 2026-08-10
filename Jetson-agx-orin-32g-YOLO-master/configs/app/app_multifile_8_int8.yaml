@@ -1,0 +1,79 @@
+app:
+  app_name: deepstream-yolov8-multifile-8-int8
+  source_count: 8
+  enable_web: false
+
+scenes:
+  production: {description: "生产作业区"}
+  warehouse: {description: "仓库物流通道"}
+  vehicle_gate: {description: "车辆出入口"}
+  normal: {description: "普通监控区"}
+
+models:
+  primary: {backend: deepstream_nvinfer, engine: models/int8/yolov8s_int8.engine}
+  helmet:
+    {backend: tensorrt, engine: models/int8/ppe_yolov8n_int8.engine, labels: models/ppe_labels.txt,
+     input_width: 640, input_height: 640, confidence_threshold: 0.25, nms_iou_threshold: 0.45}
+  pose: {backend: tensorrt, engine: models/int8/v8_n_pose_int8.engine, input_width: 640, input_height: 640}
+  fire_smoke:
+    {backend: tensorrt, engine: models/int8/fire_smoke_best_int8.engine, labels: models/fire_smoke_labels.txt,
+     input_width: 640, input_height: 640}
+  plate_detector: {backend: tensorrt, engine: models/int8/plate_detector_fastalpr_int8.engine, input_width: 384, input_height: 384}
+  plate_ocr: {backend: tensorrt, engine: models/plate_ocr_fastalpr-dynamic.engine, config: models/plate_ocr_config.yaml, input_width: 128, input_height: 64}
+
+model_tasks:
+  helmet: {model: helmet, trigger_classes: [person], interval: 2, min_track_frames: 3}
+  pose: {model: pose, trigger_classes: [person], interval: 10, min_track_frames: 3}
+  fire_smoke: {model: fire_smoke, interval: 10, min_track_frames: 1, frame_trigger: true}
+  plate_detector: {model: plate_detector, trigger_classes: [car, truck, bus], interval: 5, min_track_frames: 3}
+
+capabilities:
+  helmet_compliance: {tasks: [helmet]}
+  pose_analysis: {tasks: [pose]}
+  fire_smoke_monitoring: {tasks: [fire_smoke]}
+  license_plate_recognition: {tasks: [plate_detector]}
+  basic_detection: {tasks: []}
+  warehouse_analytics: {tasks: []}
+
+sources:
+  - {name: local_video_01, kind: file, uri: ../video/1.mp4, scene: vehicle_gate, priority: high, capabilities: [license_plate_recognition, fire_smoke_monitoring]}
+  - {name: local_video_02, kind: file, uri: ../video/2.mp4, scene: production, capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]}
+  - {name: local_video_03, kind: file, uri: ../video/3.mp4, scene: production, capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]}
+  - {name: local_video_04, kind: file, uri: ../video/4.mp4, scene: production, capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]}
+  - {name: local_video_05, kind: file, uri: ../video/5.mp4, scene: normal, capabilities: [basic_detection, fire_smoke_monitoring]}
+  - {name: local_video_06, kind: file, uri: ../video/6.mp4, scene: production, capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]}
+  - {name: local_video_07, kind: file, uri: ../video/7.mp4, scene: warehouse, capabilities: [warehouse_analytics, fire_smoke_monitoring]}
+  - {name: local_video_08, kind: file, uri: ../video/8.mp4, scene: warehouse, capabilities: [warehouse_analytics, fire_smoke_monitoring]}
+
+analytics:
+  streams:
+    stream-6:
+      zones: [{id: warehouse_main, rect: [0, 0, 1280, 720]}]
+      lines: [{id: warehouse_entry, points: [[640, 0], [640, 720]], min_side_distance: 2.0, count_once_per_track: true}]
+    stream-7:
+      zones: [{id: warehouse_main, rect: [0, 0, 1280, 720]}]
+      lines: [{id: warehouse_entry, points: [[640, 0], [640, 720]], min_side_distance: 2.0, count_once_per_track: true}]
+
+logging: {level: INFO, file_path: outputs/int8/app.log, console: true}
+output: {jsonl_path: outputs/int8/results.jsonl, events_jsonl_path: outputs/int8/events.jsonl, enable_jsonl: true, enable_mqtt: false, enable_kafka: false}
+optimization: {max_queue_size: 32, fps_min: 5.0, fps_max: 30.0, enable_fps_control: false, enable_backpressure: true, enable_drop_old_frames: true}
+deepstream:
+  batch_size: 8
+  batched_push_timeout_us: 40000
+  inference_width: 640
+  inference_height: 640
+  infer_interval: 1
+  enable_tracker: true
+  enable_osd: true
+  enable_tiler: true
+  tiler_rows: 2
+  tiler_columns: 4
+  tiler_width: 1280
+  tiler_height: 720
+  output_sink: file
+  output_video_path: outputs/int8/output.mp4
+  model_engine_path: models/int8/yolov8s_int8.engine
+  custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+  tracker_config_path: configs/deepstream/tracker_iou.yml
+  infer_config_path: configs/deepstream/infer_primary_yolo_minimal.txt
+  streammux_config_path: configs/deepstream/streammux.yaml

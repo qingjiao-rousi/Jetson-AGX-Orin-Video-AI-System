@@ -212,6 +212,14 @@ class MetaParserTests(unittest.TestCase):
 
 
 class BuilderProbeDispatchTests(unittest.TestCase):
+    def test_probe_warning_format_failure_does_not_mask_fallback(self) -> None:
+        builder = PipelineBuilder(AppSettings())
+
+        with self.assertLogs(level="WARNING") as logs:
+            builder._log_probe_warning("test", "malformed %s %s", "one")
+
+        self.assertIn("malformed %s %s", logs.output[0])
+
     def test_probe_buffer_dispatches_payload_to_registry(self) -> None:
         settings = AppSettings(
             app_name="deepstream-multistream",

@@ -1281,7 +1281,12 @@ class PipelineBuilder:
         count = self._probe_warning_counts.get(key, 0) + 1
         self._probe_warning_counts[key] = count
         if count <= 3 or count % 100 == 0:
-            logging.warning("%s (count=%s)", message % args, count)
+            try:
+                formatted = message % args
+            except (TypeError, ValueError):
+                # A logging failure must never mask the metadata fallback path.
+                formatted = message
+            logging.warning("%s (count=%s)", formatted, count)
 
     def _safe_get(self, obj: object, attr: str, default: Any) -> Any:
         if obj is None:
