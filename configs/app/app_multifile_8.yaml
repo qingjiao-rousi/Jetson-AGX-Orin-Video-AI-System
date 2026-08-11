@@ -98,50 +98,50 @@ web:
 sources:
   - name: local_video_01
     kind: file
-    uri: ../video/1.mp4
+    uri: video/1.mp4
     enabled: true
     scene: vehicle_gate
     priority: high
     capabilities: [license_plate_recognition, fire_smoke_monitoring]
   - name: local_video_02
     kind: file
-    uri: ../video/2.mp4
+    uri: video/2.mp4
     enabled: true
     scene: production
     capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]
   - name: local_video_03
     kind: file
-    uri: ../video/3.mp4
+    uri: video/3.mp4
     enabled: true
     scene: production
     capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]
   - name: local_video_04
     kind: file
-    uri: ../video/4.mp4
+    uri: video/4.mp4
     enabled: true
     scene: production
     capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]
   - name: local_video_05
     kind: file
-    uri: ../video/5.mp4
+    uri: video/5.mp4
     enabled: true
     scene: normal
     capabilities: [basic_detection, fire_smoke_monitoring]
   - name: local_video_06
     kind: file
-    uri: ../video/6.mp4
+    uri: video/6.mp4
     enabled: true
     scene: production
     capabilities: [helmet_compliance, pose_analysis, fire_smoke_monitoring]
   - name: local_video_07
     kind: file
-    uri: ../video/7.mp4
+    uri: video/7.mp4
     enabled: true
     scene: warehouse
     capabilities: [warehouse_analytics, fire_smoke_monitoring]
   - name: local_video_08
     kind: file
-    uri: ../video/8.mp4
+    uri: video/8.mp4
     enabled: true
     scene: warehouse
     capabilities: [warehouse_analytics, fire_smoke_monitoring]

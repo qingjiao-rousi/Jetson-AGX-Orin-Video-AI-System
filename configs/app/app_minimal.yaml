@@ -16,7 +16,7 @@ web:
 sources:
   - name: local_video_01
     kind: file
-    uri: ../video/11798561-hd_1920_1080_50fps.mp4
+    uri: video/1.mp4
     enabled: true
 
 logging:

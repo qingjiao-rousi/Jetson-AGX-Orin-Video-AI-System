@@ -7,7 +7,7 @@
 - 8 路本地 MP4 输入，单 DeepStream Pipeline，`nvstreammux batch_size=8`。
 - file、fake 和 RTSP/RTMP sink 代码路径；8 路 MP4 INT8 完整输出已在 Jetson 实测。
 - C++ `NvDsBatchMeta` probe + Python fallback；结果输出为逐帧 JSONL 和事件 JSONL。
-- 安全帽、姿态、火焰烟雾、车牌检测使用 INT8 engine；车牌 OCR 当前保持 FP16。
+- 安全帽、姿态、火焰烟雾、车牌检测与 OCR 由独立 TensorRT worker 按配置加载；当前主模型 A/B 基线中它们均保持 FP16、batch=1。
 - `tegrastats` 指标、队列状态、GPU/温度/RAM/功耗记录，以及 systemd/日志轮转模板。
 
 当前没有声称：真实摄像头长时间稳定性、模型 mAP/Recall、FP16 与 INT8 的公平对比，或任何未完成实验支持的 P95 延迟数值。
@@ -16,7 +16,7 @@
 
 ```text
 MP4 / RTSP
-   -> hardware decode -> nvstreammux(batch=8) -> YOLOv8 INT8 -> tracker
+   -> hardware decode -> nvstreammux(batch=1/4/8) -> primary YOLO (FP16/INT8) -> tracker
    -> C++ metadata probe -> Python FrameResult
    -> capability routing -> bounded TensorRT workers -> JSONL events
    -> OSD -> hardware H.264 encoder -> MP4 / RTMP / RTSP
@@ -49,6 +49,16 @@ scripts/install_jetson_deps.sh
 
 engine、ONNX、权重、校准图片和视频不属于公开代码提交。请根据模型许可证准备这些文件，并在本机生成 engine。
 
+模型资产清单与构建边界见 [models/README.md](models/README.md)，文档导航见 [docs/index.md](docs/index.md)。
+
+主检测配置依赖 DeepStream YOLO 自定义解析器。该解析器是与 Jetson 环境绑定的本机构建产物，未纳入 Git；在目标设备上执行：
+
+```bash
+scripts/build_custom_yolo_parser.sh
+```
+
+脚本会打印上游源代码提交和 `.so` 的 SHA256，应将两者记录到实验记录中。若要固定上游版本，设置 `DEEPSTREAM_YOLO_REVISION=<commit-or-tag>` 后再执行。
+
 主模型 A/B 基准配置：[configs/app/app_multifile_8_primary_int8.yaml](configs/app/app_multifile_8_primary_int8.yaml)。它只将主 YOLO 替换为 INT8，安全帽、姿态、烟火、车牌检测和 OCR 继续使用 FP16。`app_multifile_8_int8.yaml` 保留为后续全辅助模型 INT8 的场景配置，不用于当前主模型对照。
 
 主模型 INT8 校准构建示例：
@@ -64,7 +74,7 @@ python3 scripts/build_yolov8s_int8.py \
 
 ## 运行 8 路主模型 INT8 MP4
 
-输入配置中的视频路径是项目目录外的 `../video/1.mp4` 到 `../video/8.mp4`。准备好本机 engine 和视频后：
+输入配置使用仓库根目录下的 `video/1.mp4` 到 `video/8.mp4`。准备好本机 engine 和视频后：
 
 ```bash
 OUTPUT_SINK=file RUN_SECONDS=0 ENABLE_TEGRASTATS=1 \
@@ -89,7 +99,7 @@ python3 scripts/summarize_precision_run.py \
 本地 MP4 可通过 MediaMTX 模拟 RTSP：
 
 ```bash
-scripts/serve_mp4_as_rtsp.py ../video --limit 8
+scripts/serve_mp4_as_rtsp.py video --limit 8
 scripts/run_rtsp_inproc.sh outputs/rtsp_run
 ```
 
@@ -107,9 +117,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ## 实测记录
 
-修复 batch metadata 统计后，8 路本地 MP4 INT8 正常文件输出记录于 [projectMd/精度对比实验报告.md](projectMd/精度对比实验报告.md)：14,222 条结果帧、估算丢帧 0%、聚合处理 FPS 80.381。该数据只代表指定硬件、软件、视频和配置，不能替代 mAP 或公平的 FP16/INT8 对比。性能实验的统一口径、P50/P95 定义和 36 组矩阵执行方式见 [../docs/benchmark.md](../docs/benchmark.md)。
+已完成主 YOLO FP16/INT8 的 `1/4/8` 路、`fake/file`、每组 3 次重复的 36 组系统基线。性能实验口径、P50/P95 定义和完整结果见 [docs/benchmark.md](docs/benchmark.md)。该结果代表指定硬件、软件和输入视频下的系统行为，不能替代 mAP 或公平的模型精度对比。
 
 ## 已知限制与路线
 
-- 已埋点主推理前探针至 JSON 成功写入的 P50/P95；仍需按统一矩阵完成 1/4/8 路 FP16/INT8 实测、真实 RTSP 长稳和故障注入。
+- 已埋点主推理前探针至 JSON 成功写入的 P50/P95；下一步是主模型离线 FP16/INT8 输出对齐、真实 RTSP 长稳和故障注入。
 - 需要将 benchmark 配置、环境信息、engine SHA256 和质量结果作为脱敏实验记录保存。

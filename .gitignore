@@ -45,6 +45,7 @@ Makefile.user
 
 # TensorRT / DeepStream generated artifacts
 *.engine
+*.engine.before_batch8
 *.plan
 *.trt
 *.uff
@@ -69,12 +70,16 @@ logs/
 *.log
 *.jsonl
 *.csv
+.runtime/
+tmp/
+*.pid
 
 # Local media and datasets
 video/
 videos/
 datasets/
 data/
+*.data
 *.mp4
 *.avi
 *.mov
@@ -84,9 +89,13 @@ data/
 # Keep placeholder files when directories need to exist
 !.gitkeep
 
-# Versioned Jetson runtime artifacts
-!Jetson-agx-orin-32g-YOLO-master/custom_libs/nvdsinfer_custom_impl_Yolo/
-!Jetson-agx-orin-32g-YOLO-master/custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
-!Jetson-agx-orin-32g-YOLO-master/models/
-!Jetson-agx-orin-32g-YOLO-master/models/yolov8s.engine
-!Jetson-agx-orin-32g-YOLO-master/models/yolov8s.onnx
+# Certificates, calibration data, and local inspection artifacts
+*.key
+*.crt
+*.pem
+*.p12
+*.pfx
+calibration/
+t-inspect-*
+models/**/*.tmp
+docs/archive/projectMd/
