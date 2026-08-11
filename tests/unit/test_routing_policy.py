@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 import unittest
 
 from app.application.routing_policy import RoutingPolicy, TaskRequestBuffer
@@ -109,6 +110,20 @@ class RoutingPolicyTests(unittest.TestCase):
         stats = buffer.stats()
         self.assertEqual(stats["by_task"]["helmet"]["submitted"], 2)
         self.assertEqual(stats["by_task"]["helmet"]["replaced"], 1)
+
+    def test_buffer_reports_queue_wait_for_drained_requests(self) -> None:
+        policy = RoutingPolicy(self.settings)
+        buffer = TaskRequestBuffer(max_size=1)
+        request = policy.route(make_frame(0))
+        request = policy.route(make_frame(1))
+        request = policy.route(make_frame(2))
+        submitted_at = request[0].submitted_at_monotonic
+        buffer.submit(request)
+        with patch("app.application.routing_policy.time.monotonic", return_value=submitted_at + 0.125):
+            buffer.drain()
+        queue_wait = buffer.stats()["by_task"]["helmet"]["queue_wait_ms"]
+        self.assertEqual(queue_wait["samples"], 1)
+        self.assertEqual(queue_wait["p50"], 125.0)
 
 
 if __name__ == "__main__":

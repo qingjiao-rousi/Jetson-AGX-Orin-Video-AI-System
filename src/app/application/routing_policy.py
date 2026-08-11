@@ -6,6 +6,8 @@ from threading import Lock
 import time
 from typing import Any
 
+from app.application.task_metrics import sample_summary
+
 from app.domain.entities import BoundingBox, FrameResult, Track, canonical_stream_id
 
 
@@ -229,6 +231,7 @@ class TaskRequestBuffer:
         self._dropped_by_task: dict[str, int] = {}
         self._replaced_by_task: dict[str, int] = {}
         self._submitted_by_task: dict[str, int] = {}
+        self._queue_wait_ms_by_task: dict[str, deque[float]] = {}
 
     def submit(self, requests: tuple[TaskRequest, ...] | list[TaskRequest]) -> None:
         with self._lock:
@@ -268,6 +271,9 @@ class TaskRequestBuffer:
                     self._order.append(key)
                     self._items[key] = request
                     continue
+                self._queue_wait_ms_by_task.setdefault(request.task_name, deque(maxlen=2048)).append(
+                    max((time.monotonic() - request.submitted_at_monotonic) * 1000.0, 0.0)
+                )
                 requests.append(request)
             return tuple(requests)
 
@@ -285,12 +291,16 @@ class TaskRequestBuffer:
                         "replaced": self._replaced_by_task.get(task_name, 0),
                         "dropped": self._dropped_by_task.get(task_name, 0),
                         "pending": pending_by_task.get(task_name, 0),
+                        "queue_wait_ms": sample_summary(
+                            self._queue_wait_ms_by_task.get(task_name, ())
+                        ),
                     }
                     for task_name in sorted(
                         set(self._submitted_by_task)
                         | set(self._replaced_by_task)
                         | set(self._dropped_by_task)
                         | set(pending_by_task)
+                        | set(self._queue_wait_ms_by_task)
                     )
                 },
             }

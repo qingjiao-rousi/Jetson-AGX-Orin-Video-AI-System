@@ -130,7 +130,12 @@ def create_application(config_path: Path, settings=None) -> Application:
             "writer": json_writer.stats(),
             "task_buffer": task_buffer.stats(),
             "frame_store": frame_store.stats(),
-            "workers": {"helmet": helmet_worker.stats()},
+            "workers": {
+                "helmet": helmet_worker.stats(),
+                "pose": pose_worker.stats(),
+                "fire_smoke": fire_smoke_worker.stats(),
+                "plate_detector": plate_worker.stats(),
+            },
         }
     )
 

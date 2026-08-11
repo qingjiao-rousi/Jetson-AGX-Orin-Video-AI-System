@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from threading import Event, Thread, current_thread
+import time
 from typing import Any
 
 import cv2
@@ -10,6 +11,7 @@ import numpy as np
 
 from app.application.helmet_service import TensorRTHelmetBackend, letterbox
 from app.application.routing_policy import TaskRequest
+from app.application.task_metrics import TaskExecutionMetrics
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class FireSmokeTaskWorker:
         self._stop_event = Event()
         self._error: str | None = None
         self._labels = ("fire", "smoke")
+        self._metrics = TaskExecutionMetrics()
 
     def set_event_handler(self, handler) -> None:
         self._handler = handler
@@ -83,7 +86,12 @@ class FireSmokeTaskWorker:
         self._thread = None
 
     def stats(self) -> dict[str, Any]:
-        return {"running": self._thread is not None and self._thread.is_alive(), "initialized": self._backend is not None, "error": self._error}
+        return {
+            "running": self._thread is not None and self._thread.is_alive(),
+            "initialized": self._backend is not None,
+            "error": self._error,
+            **self._metrics.stats(),
+        }
 
     def _run(self) -> None:
         while not self._stop_event.wait(0.02):
@@ -103,19 +111,32 @@ class FireSmokeTaskWorker:
                     logging.error("fire/smoke worker initialization failed: %s", exc)
                     continue
             for request in requests:
-                frame = self.frame_store.get_bgr(request.stream_id, request.frame_id)
+                frame = self.frame_store.get_bgr(request.stream_id, request.frame_id, consumer="fire_smoke")
                 if frame is None:
+                    self._metrics.missing_frames += 1
                     continue
                 try:
+                    started = time.monotonic()
+                    self._metrics.record_queue_wait(
+                        (started - request.submitted_at_monotonic) * 1000.0
+                    )
                     image, ratio, pad_x, pad_y = letterbox(frame, 640, 640)
                     tensor = np.transpose(cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0, (2, 0, 1))[None, ...]
-                    for status, confidence, box in decode_fire_smoke(self._backend.infer(tensor), self._labels):
+                    inference_started = time.monotonic()
+                    output = self._backend.infer(tensor)
+                    self._metrics.record_inference((time.monotonic() - inference_started) * 1000.0)
+                    for status, confidence, box in decode_fire_smoke(output, self._labels):
                         box["left"] = max((box["left"] - pad_x) / ratio, 0.0)
                         box["top"] = max((box["top"] - pad_y) / ratio, 0.0)
                         box["width"] /= ratio
                         box["height"] /= ratio
                         if self._handler is not None:
                             self._handler(FireSmokeEvent("fire_smoke_detection", request.stream_id, request.frame_id, status, confidence, box))
+                    self._metrics.processed += 1
+                    self._metrics.record_task_latency(
+                        (time.monotonic() - request.submitted_at_monotonic) * 1000.0
+                    )
                 except Exception as exc:
                     self._error = str(exc)
+                    self._metrics.errors += 1
                     logging.exception("fire/smoke task failed")

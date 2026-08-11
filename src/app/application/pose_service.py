@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from threading import Event, Thread, current_thread
+import time
 from typing import Any
 
 import numpy as np
 
 from app.application.helmet_service import TensorRTHelmetBackend, crop_person_roi, letterbox
 from app.application.routing_policy import TaskRequest
+from app.application.task_metrics import TaskExecutionMetrics
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,7 @@ class PoseTaskWorker:
         self._error: str | None = None
         self._processed = 0
         self._emitted = 0
+        self._metrics = TaskExecutionMetrics()
         self._logged_output = False
 
     def set_event_handler(self, handler) -> None:
@@ -77,7 +80,13 @@ class PoseTaskWorker:
         self._thread = None
 
     def stats(self) -> dict[str, Any]:
-        return {"running": self._thread is not None and self._thread.is_alive(), "initialized": self._backend is not None, "error": self._error, "processed": self._processed, "emitted": self._emitted}
+        return {
+            "running": self._thread is not None and self._thread.is_alive(),
+            "initialized": self._backend is not None,
+            "error": self._error,
+            "emitted": self._emitted,
+            **self._metrics.stats(),
+        }
 
     def _run(self) -> None:
         while not self._stop_event.wait(0.02):
@@ -95,23 +104,35 @@ class PoseTaskWorker:
                     logging.error("pose worker initialization failed: %s", exc)
                     continue
             for request in requests:
-                frame = self.frame_store.get_bgr(request.stream_id, request.frame_id)
+                frame = self.frame_store.get_bgr(request.stream_id, request.frame_id, consumer="pose")
                 if frame is None:
+                    self._metrics.missing_frames += 1
                     continue
                 try:
+                    started = time.monotonic()
+                    self._metrics.record_queue_wait(
+                        (started - request.submitted_at_monotonic) * 1000.0
+                    )
                     roi, _ = crop_person_roi(frame, request.bbox)
                     image, _, _, _ = letterbox(roi, 640, 640)
                     tensor = np.transpose(image[:, :, ::-1].astype(np.float32) / 255.0, (2, 0, 1))[None, ...]
+                    inference_started = time.monotonic()
                     output = self._backend.infer(tensor)
+                    self._metrics.record_inference((time.monotonic() - inference_started) * 1000.0)
                     if not self._logged_output:
                         raw = np.asarray(output)
                         logging.info("pose output shape=%s max=%.4f", raw.shape, float(np.max(raw)))
                         self._logged_output = True
                     keypoints = decode_pose_output(output, roi.shape[:2])
-                    self._processed += 1
+                    self._metrics.processed += 1
+                    self._processed = self._metrics.processed
+                    self._metrics.record_task_latency(
+                        (time.monotonic() - request.submitted_at_monotonic) * 1000.0
+                    )
                     if keypoints is not None and self._handler is not None:
                         self._handler(PoseEvent("pose_observation", request.stream_id, request.track_id, request.frame_id, keypoints, float(request.confidence)))
                         self._emitted += 1
                 except Exception as exc:
                     self._error = str(exc)
+                    self._metrics.errors += 1
                     logging.exception("pose task failed")

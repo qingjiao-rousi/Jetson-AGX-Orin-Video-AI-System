@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import logging
 from threading import Event, Thread, current_thread
+import time
 from typing import Any
 
 import cv2
@@ -11,6 +12,7 @@ import numpy as np
 
 from app.application.helmet_service import TensorRTHelmetBackend, crop_person_roi, letterbox, map_roi_bbox
 from app.application.routing_policy import TaskRequest
+from app.application.task_metrics import TaskExecutionMetrics
 from app.domain.entities import BoundingBox
 
 
@@ -54,6 +56,7 @@ class PlateTaskWorker:
         self._processor: PlateTaskProcessor | None = None
         self._error: str | None = None
         self._history: dict[tuple[str, int], list[PlateRecognition]] = {}
+        self._metrics = TaskExecutionMetrics()
 
     def set_event_handler(self, handler) -> None:
         self._handler = handler
@@ -78,6 +81,8 @@ class PlateTaskWorker:
             "initialized": self._processor is not None,
             "error": self._error,
             "tracked_vehicles": len(self._history),
+            "processing_scope": "detector_ocr_pre_post",
+            **self._metrics.stats(),
         }
 
     def _run(self) -> None:
@@ -108,11 +113,22 @@ class PlateTaskWorker:
                     self.task_buffer.drain(task_name="plate_detector")
                     return
             for request in self.task_buffer.drain(2, task_name="plate_detector"):
-                frame = self.frame_store.get_bgr(request.stream_id, request.frame_id)
+                frame = self.frame_store.get_bgr(request.stream_id, request.frame_id, consumer="plate_detector")
                 if frame is None:
+                    self._metrics.missing_frames += 1
                     continue
                 try:
+                    started = time.monotonic()
+                    self._metrics.record_queue_wait(
+                        (started - request.submitted_at_monotonic) * 1000.0
+                    )
+                    processing_started = time.monotonic()
                     recognition = self._processor.process(request, frame)
+                    self._metrics.record_inference((time.monotonic() - processing_started) * 1000.0)
+                    self._metrics.processed += 1
+                    self._metrics.record_task_latency(
+                        (time.monotonic() - request.submitted_at_monotonic) * 1000.0
+                    )
                     if recognition is None or not recognition.plate_text:
                         continue
                     key = (recognition.stream_id, recognition.vehicle_track_id)
@@ -136,6 +152,7 @@ class PlateTaskWorker:
                             values.clear()
                 except Exception as exc:
                     self._error = str(exc)
+                    self._metrics.errors += 1
                     logging.exception("plate task failed")
 
 

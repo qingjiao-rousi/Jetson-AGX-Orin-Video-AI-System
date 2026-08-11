@@ -44,7 +44,7 @@ scripts/deploy/build_fp16_engines.sh --specialists-only
 | 输入 | 视频文件 SHA256、路数、时长、分辨率、帧率 |
 | 配置 | FP16/INT8 YAML、engine SHA256、sink、batch size、预热规则 |
 | 性能 | 聚合 FPS、每路 FPS、P50/P95、GPU/RAM、GPU+SOC 功耗、温度 |
-| 背压 | writer/task-buffer/frame-store/FPS controller 的累计丢弃数与 writer 错误数 |
+| 背压 | writer/task-buffer/FPS controller 的累计丢弃数、FrameStore FIFO 淘汰数、各 worker 的 `missing_frames`、队列等待与任务时延、writer 错误数 |
 | 有效性 | 程序退出码、EOS/错误日志、JSONL 行数、file sink 的输出视频可播放性 |
 
 不要在同一张表中混用不同视频、不同功耗模式或不同 sink 的结果。
@@ -115,7 +115,9 @@ python3 scripts/benchmark/run_benchmark_matrix.py \
 
 相对同一轮 FP16 对照，候选 INT8 的 fake/file FPS 分别提高约 7.5%/6.3%，E2E P50
 分别降低约 13.0%/11.9%，GPU+SoC 功耗分别降低约 11.6%/11.7%。task-buffer 总丢弃
-分别降低约 22.8%/19.7%，但 FrameStore 丢弃没有变化，说明帧存储仍是独立瓶颈。
+分别降低约 22.8%/19.7%。FrameStore 的累计淘汰数在两组中没有变化，但该字段表示有限
+FIFO 缓存的自然周转，不能单独等同于业务帧缺失或性能瓶颈。后续应以各 worker 的
+`missing_frames`、按 consumer 的命中/未命中、FrameStore frame age 和任务时延共同判断。
 
 这组结果支持候选 INT8 进入真实业务帧验证和受控部署评估，但不应把它与 FP16 宣称为
 完全等价：COCO person Recall 仍低约 1.7 个百分点，且较低阈值会改变下游任务触发量。

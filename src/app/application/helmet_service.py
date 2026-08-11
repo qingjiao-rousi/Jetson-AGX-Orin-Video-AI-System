@@ -631,7 +631,7 @@ class HelmetTaskExecutor:
         events: list[HelmetEvent] = []
         tasks: list[tuple[TaskRequest, np.ndarray]] = []
         for request in requests:
-            frame = frame_store.get_bgr(request.stream_id, request.frame_id)
+            frame = frame_store.get_bgr(request.stream_id, request.frame_id, consumer="helmet")
             if frame is None:
                 self.missing_frames += 1
                 continue

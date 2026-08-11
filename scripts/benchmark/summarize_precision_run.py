@@ -154,6 +154,8 @@ def summarize(name: str, output_dir: Path, warmup_samples: int) -> dict[str, Any
             "backpressure_max_pending": nested_value(controls, "backpressure", "max_pending_ever", default=0),
             "task_buffer_by_task": nested_value(queues, "task_buffer", "by_task", default={}),
             "helmet_worker": nested_value(queues, "workers", "helmet", default={}),
+            "workers": nested_value(queues, "workers", default={}),
+            "frame_store": nested_value(queues, "frame_store", default={}),
         },
         "predictions": {
             "result_rows": len(results),
