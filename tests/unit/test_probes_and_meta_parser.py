@@ -234,7 +234,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
                 model_engine_path=Path("models/yolov8s.engine"),
                 custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
                 tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
-                infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
+                infer_config_path=Path("configs/deepstream/infer_primary_yolo_minimal.txt"),
                 streammux_config_path=Path("configs/deepstream/streammux.yaml"),
             ),
         )
@@ -273,7 +273,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
                 model_engine_path=Path("models/yolov8s.engine"),
                 custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
                 tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
-                infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
+                infer_config_path=Path("configs/deepstream/infer_primary_yolo_minimal.txt"),
                 streammux_config_path=Path("configs/deepstream/streammux.yaml"),
             ),
         )
@@ -352,7 +352,7 @@ class BuilderProbeDispatchTests(unittest.TestCase):
                 model_engine_path=Path("models/yolov8s.engine"),
                 custom_lib_path=Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so"),
                 tracker_config_path=Path("configs/deepstream/tracker_iou.yml"),
-                infer_config_path=Path("configs/deepstream/infer_primary_yolo.txt"),
+                infer_config_path=Path("configs/deepstream/infer_primary_yolo_minimal.txt"),
                 streammux_config_path=Path("configs/deepstream/streammux.yaml"),
             ),
         )

@@ -10,7 +10,7 @@ Usage:
   scripts/legacy/person_analytics/run_person_analytics.sh INPUT_MP4 [OUTPUT_DIR]
 
 Optional environment overrides:
-  ANALYTICS_CONFIG=configs/analytics/person_analytics.yaml
+  ANALYTICS_CONFIG=configs/legacy/person_analytics.yaml
   OUTPUT_VIDEO_NAME=person_analytics.mp4
   OUTPUT_JSON_NAME=results.jsonl
   OUTPUT_SUMMARY_NAME=analytics_summary.json
@@ -37,7 +37,7 @@ fi
 INPUT_VIDEO="$1"
 OUTPUT_DIR="${2:-outputs/final}"
 
-ANALYTICS_CONFIG="${ANALYTICS_CONFIG:-configs/analytics/person_analytics.yaml}"
+ANALYTICS_CONFIG="${ANALYTICS_CONFIG:-configs/legacy/person_analytics.yaml}"
 OUTPUT_VIDEO_NAME="${OUTPUT_VIDEO_NAME:-person_analytics.mp4}"
 OUTPUT_JSON_NAME="${OUTPUT_JSON_NAME:-results.jsonl}"
 OUTPUT_SUMMARY_NAME="${OUTPUT_SUMMARY_NAME:-analytics_summary.json}"

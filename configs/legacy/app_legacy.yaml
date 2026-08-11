@@ -44,5 +44,5 @@ deepstream:
   # 指向一个自定义的YOLO解析库,如非极大值抑制NMS
   custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
   tracker_config_path: configs/deepstream/tracker_iou.yml
-  infer_config_path: configs/deepstream/infer_primary_yolo.txt
+  infer_config_path: configs/legacy/infer_primary_yolo.txt
   streammux_config_path: configs/deepstream/streammux.yaml

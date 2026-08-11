@@ -140,7 +140,7 @@ class DeepStreamSettings:
     custom_lib_path: Path = Path("custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so")
     tracker_config_path: Path = Path("configs/deepstream/tracker_iou.yml")
     probe_handler_path: Path = Path("build/probe_handler/libprobe_handler.so")
-    infer_config_path: Path = Path("configs/deepstream/infer_primary_yolo.txt")
+    infer_config_path: Path = Path("configs/deepstream/infer_primary_yolo_minimal.txt")
     streammux_config_path: Path = Path("configs/deepstream/streammux.yaml")
     enable_hardware_fallback: bool = True
     enable_last_frame_keepalive: bool = True

@@ -10,7 +10,7 @@ Usage:
   scripts/legacy/person_analytics/run_person_analytics_batch.sh INPUT_VIDEO_DIR [OUTPUT_BATCH_DIR]
 
 Optional environment overrides:
-  ANALYTICS_CONFIG=configs/analytics/person_analytics.yaml
+  ANALYTICS_CONFIG=configs/legacy/person_analytics.yaml
   VIDEO_GLOB=*.mp4
   BATCH_JOBS=8
   CONTINUE_ON_ERROR=1
@@ -34,7 +34,7 @@ fi
 
 INPUT_DIR="$1"
 BATCH_DIR="${2:-outputs/batch}"
-ANALYTICS_CONFIG="${ANALYTICS_CONFIG:-configs/analytics/person_analytics.yaml}"
+ANALYTICS_CONFIG="${ANALYTICS_CONFIG:-configs/legacy/person_analytics.yaml}"
 VIDEO_GLOB="${VIDEO_GLOB:-*.mp4}"
 BATCH_JOBS="${BATCH_JOBS:-8}"
 CONTINUE_ON_ERROR="${CONTINUE_ON_ERROR:-1}"

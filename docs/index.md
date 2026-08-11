@@ -7,4 +7,5 @@
 - [COCO val2017 FP16/INT8 label-based evaluation](coco_fp16_int8_evaluation.md)
 - [C++ probe build notes](../custom_libs/probe_handler/README.md)
 - [Model asset requirements](../models/README.md)
+- [Configuration guide](../configs/README.md)
 - [Script directory guide](../scripts/README.md)

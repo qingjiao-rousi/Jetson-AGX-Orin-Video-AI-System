@@ -20,7 +20,7 @@ Optional environment overrides:
   UI_HOST=127.0.0.1
   UI_PORT=8090
   START_UI=1
-  ANALYTICS_CONFIG=configs/analytics/person_analytics.yaml
+  ANALYTICS_CONFIG=configs/legacy/person_analytics.yaml
   VIDEO_GLOB=*.mp4
   OUTPUT_WIDTH=1280
   OUTPUT_HEIGHT=720

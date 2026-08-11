@@ -1,5 +1,0 @@
-logging:
-  level: INFO
-  file_path: outputs/logs/app.log
-  console: true
-

@@ -51,7 +51,7 @@ rm -f "$OUTPUT_VIDEO" "$OUTPUT_JSON"
 source scripts/deploy/env.sh
 
 APP_ARGS=(
-    --config configs/app/app_minimal.yaml \
+    --config configs/legacy/app_minimal.yaml \
     --input-video "$INPUT_VIDEO" \
     --output-video "$OUTPUT_VIDEO" \
     --output-json "$OUTPUT_JSON" \

@@ -151,7 +151,7 @@ def load_settings(config_path: Path) -> AppSettings:
                 deepstream_cfg.get("probe_handler_path", "build/probe_handler/libprobe_handler.so")
             ),
             infer_config_path=Path(
-                deepstream_cfg.get("infer_config_path", "configs/deepstream/infer_primary_yolo.txt")
+                deepstream_cfg.get("infer_config_path", "configs/deepstream/infer_primary_yolo_minimal.txt")
             ),
             streammux_config_path=Path(
                 deepstream_cfg.get("streammux_config_path", "configs/deepstream/streammux.yaml")

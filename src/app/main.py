@@ -14,7 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/app/app.yaml"),
+        default=Path("configs/app/app_multifile_8.yaml"),
         help="Path to the application config file.",
     )
     parser.add_argument("--input-video", type=Path, help="Local MP4 input path.")

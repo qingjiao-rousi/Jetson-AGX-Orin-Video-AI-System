@@ -79,5 +79,5 @@ deepstream:
   custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
   tracker_config_path: configs/deepstream/tracker_iou.yml
   probe_handler_path: build/probe_handler/libprobe_handler.so
-  infer_config_path: configs/deepstream/infer_primary_yolo.txt
+  infer_config_path: configs/legacy/infer_primary_yolo.txt
   streammux_config_path: configs/deepstream/streammux.yaml
