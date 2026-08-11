@@ -39,7 +39,7 @@ capabilities:
 sources:
   - name: vehicle_gate_mp4_01
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/1.mp4
+    uri: video/1.mp4
     enabled: true
     scene: vehicle_gate
     priority: high

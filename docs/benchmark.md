@@ -54,7 +54,7 @@ scripts/build_fp16_engines_trt107.sh --specialists-only
 先只生成配置和计划，检查后再实跑：
 
 ```bash
-cd Jetson-agx-orin-32g-YOLO-master
+cd <repository-root>
 python3 scripts/run_benchmark_matrix.py
 ```
 

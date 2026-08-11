@@ -37,7 +37,7 @@ capabilities:
 sources:
   - name: helmet_mp4_01
     kind: file
-    uri: /home/nvidia/Desktop/YOLO/video/1.mp4
+    uri: video/1.mp4
     enabled: true
     scene: production
     priority: high
