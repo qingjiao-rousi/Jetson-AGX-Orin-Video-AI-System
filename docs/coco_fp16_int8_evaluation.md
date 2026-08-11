@@ -44,9 +44,9 @@ python3 -m pip install -r requirements-eval.txt
 
 ```bash
 cd <repository-root>
-source scripts/env.sh
+source scripts/deploy/env.sh
 
-python3 scripts/evaluate_primary_detector_coco.py \
+python3 scripts/evaluation/evaluate_primary_detector_coco.py \
   --images-dir datasets/coco/val2017 \
   --annotations datasets/coco/annotations/instances_val2017.json \
   --max-images 50
@@ -55,7 +55,7 @@ python3 scripts/evaluate_primary_detector_coco.py \
 确认无误后，删除 `--max-images`，执行完整 5,000 张 COCO val2017：
 
 ```bash
-python3 scripts/evaluate_primary_detector_coco.py \
+python3 scripts/evaluation/evaluate_primary_detector_coco.py \
   --images-dir datasets/coco/val2017 \
   --annotations datasets/coco/annotations/instances_val2017.json
 ```
@@ -145,8 +145,8 @@ cd <repository-root>/datasets/coco
 unzip annotations_trainval2017.zip 'annotations/instances_train2017.json'
 
 cd <repository-root>
-source scripts/env.sh
-python3 scripts/prepare_coco_train_calibration.py \
+source scripts/deploy/env.sh
+python3 scripts/evaluation/prepare_coco_train_calibration.py \
   --annotations datasets/coco/annotations/instances_train2017.json
 ```
 
@@ -169,7 +169,7 @@ find calibration/coco_train504/images -maxdepth 1 -type f -name '*.jpg' | wc -l
 绝不覆盖当前 baseline INT8 engine：
 
 ```bash
-python3 scripts/build_primary_detector_int8.py \
+python3 scripts/deploy/build_primary_detector_int8.py \
   --onnx export_yolov8_ds/yolov8s.onnx \
   --images calibration/coco_train504/images \
   --batch-size 8 \
@@ -183,7 +183,7 @@ python3 scripts/build_primary_detector_int8.py \
 使用同一完整 val2017 重新评测候选：
 
 ```bash
-python3 scripts/evaluate_primary_detector_coco.py \
+python3 scripts/evaluation/evaluate_primary_detector_coco.py \
   --images-dir datasets/coco/val2017 \
   --annotations datasets/coco/annotations/instances_val2017.json \
   --int8-engine models/int8/yolov8s_coco_train504.engine

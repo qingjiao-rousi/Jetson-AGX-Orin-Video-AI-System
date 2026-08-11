@@ -7,4 +7,4 @@ User=@SERVICE_USER@
 Group=@SERVICE_GROUP@
 EnvironmentFile=/etc/campus-surveillance/campus-surveillance.env
 WorkingDirectory=@PROJECT_ROOT@
-ExecStart=/usr/bin/env bash @PROJECT_ROOT@/scripts/cleanup_outputs.sh
+ExecStart=/usr/bin/env bash @PROJECT_ROOT@/scripts/deploy/cleanup_outputs.sh

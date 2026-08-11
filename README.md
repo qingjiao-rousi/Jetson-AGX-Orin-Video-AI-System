@@ -28,21 +28,21 @@ MP4 / RTSP
 - `custom_libs/probe_handler/`：C++ batch metadata parser。
 - `src/app/application/`：业务路由、专用 TensorRT worker、场景分析。
 - `src/app/infrastructure/monitoring/`：`tegrastats` 与 runtime metrics。
-- `scripts/`：环境检查、engine 构建、运行、验收和汇总。
+- `scripts/`：按部署、基准、评测、RTSP、工具和历史子系统分组；入口说明见 [scripts/README.md](scripts/README.md)。
 
 ## 环境
 
 已验证环境：Jetson AGX Orin 32GB、JetPack 6.2.1、TensorRT 10.7.0、DeepStream 7.1、Python 3.10。engine 必须在目标 Jetson 上构建，不能假设跨 GPU 架构兼容。
 
 ```bash
-source scripts/env.sh
-scripts/check_env.sh
+source scripts/deploy/env.sh
+scripts/deploy/check_env.sh
 ```
 
 依赖安装脚本会安装系统包并构建 `pyds`，需要 Jetson、sudo 和网络：
 
 ```bash
-scripts/install_jetson_deps.sh
+scripts/deploy/install_jetson_deps.sh
 ```
 
 ## 模型与配置
@@ -54,7 +54,7 @@ engine、ONNX、权重、校准图片和视频不属于公开代码提交。请�
 主检测配置依赖 DeepStream YOLO 自定义解析器。该解析器是与 Jetson 环境绑定的本机构建产物，未纳入 Git；在目标设备上执行：
 
 ```bash
-scripts/build_custom_yolo_parser.sh
+scripts/deploy/build_custom_yolo_parser.sh
 ```
 
 脚本会打印上游源代码提交和 `.so` 的 SHA256，应将两者记录到实验记录中。若要固定上游版本，设置 `DEEPSTREAM_YOLO_REVISION=<commit-or-tag>` 后再执行。
@@ -64,7 +64,7 @@ scripts/build_custom_yolo_parser.sh
 主模型 INT8 校准构建示例：
 
 ```bash
-python3 scripts/build_primary_detector_int8.py \
+python3 scripts/deploy/build_primary_detector_int8.py \
   --onnx export_yolov8_ds/yolov8s.onnx \
   --images calibration/coco_train504/images \
   --batch-size 8 \
@@ -78,7 +78,7 @@ python3 scripts/build_primary_detector_int8.py \
 
 ```bash
 OUTPUT_SINK=file RUN_SECONDS=0 ENABLE_TEGRASTATS=1 CONFIDENCE_THRESHOLD=0.15 \
-scripts/run_multistream.sh \
+scripts/deploy/run_multistream.sh \
   configs/app/app_multifile_8_primary_int8.yaml \
   outputs/primary_int8_coco_train504_8streams
 ```
@@ -86,7 +86,7 @@ scripts/run_multistream.sh \
 输出目录包含 `output.mp4`、`results.jsonl`、`events.jsonl`、`runtime_metrics.jsonl` 和 `app.log`。
 
 ```bash
-python3 scripts/summarize_precision_run.py \
+python3 scripts/benchmark/summarize_precision_run.py \
   --run primary_int8=outputs/primary_int8_coco_train504_8streams \
   --warmup-samples 5 \
   --output outputs/int8_summary.json
@@ -99,8 +99,8 @@ python3 scripts/summarize_precision_run.py \
 本地 MP4 可通过 MediaMTX 模拟 RTSP：
 
 ```bash
-scripts/serve_mp4_as_rtsp.py video --limit 8
-scripts/run_rtsp_inproc.sh outputs/rtsp_run
+scripts/rtsp/serve_mp4_as_rtsp.py video --limit 8
+scripts/rtsp/run_rtsp_inproc.sh outputs/rtsp_run
 ```
 
 服务模板位于 `deploy/`，使用前必须替换其中的 `@PROJECT_ROOT@`、用户、视频目录和日志目录占位符。不要把真实 RTSP 地址、密码或证书提交到仓库。

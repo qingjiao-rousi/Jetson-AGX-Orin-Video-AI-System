@@ -739,7 +739,7 @@ function renderBatchDetail(video) {
 
   if (!video) {
     els.batchVideo.removeAttribute("src");
-    els.batchDetail.innerHTML = '<div class="empty-state">未找到批量结果。先运行 scripts/run_person_analytics_batch.sh。</div>';
+    els.batchDetail.innerHTML = '<div class="empty-state">未找到批量结果。先运行 scripts/legacy/person_analytics/run_person_analytics_batch.sh。</div>';
     return;
   }
 
@@ -1093,7 +1093,7 @@ async function refreshMultifileDashboard() {
   } catch (error) {
     console.warn("加载单 Pipeline 结果失败:", error);
     els.multifileTableBody.innerHTML = `<tr><td colspan="9">单 Pipeline 结果未就绪：${escapeHtml(error.message)}</td></tr>`;
-    els.multifileDetail.innerHTML = '<div class="empty-state">先运行 scripts/run_multifile_inproc.sh，生成 multifile_summary.json 和 multifile_quality.json。</div>';
+    els.multifileDetail.innerHTML = '<div class="empty-state">先运行 scripts/legacy/person_analytics/run_multifile_inproc.sh，生成 multifile_summary.json 和 multifile_quality.json。</div>';
   }
 }
 

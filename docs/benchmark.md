@@ -19,7 +19,7 @@
 TensorRT plan 不跨小版本前向兼容。当前运行时为 TensorRT 10.7 时，所有参与 FP16 对照的 engine 也必须由 10.7 构建。升级后先在真实 Jetson 终端运行：
 
 ```bash
-scripts/build_fp16_engines.sh
+scripts/deploy/build_fp16_engines.sh
 ```
 
 脚本采用临时 engine 文件，只有构建成功才替换现有文件。engine 是本机生成物，仍不提交 Git。
@@ -28,10 +28,10 @@ scripts/build_fp16_engines.sh
 
 ```bash
 # 只在主 YOLO 更换或其 batch profile 变化时使用。
-scripts/build_fp16_engines.sh --primary-only
+scripts/deploy/build_fp16_engines.sh --primary-only
 
 # 只有专用 ONNX 或 TensorRT 版本变化时才使用。
-scripts/build_fp16_engines.sh --specialists-only
+scripts/deploy/build_fp16_engines.sh --specialists-only
 ```
 
 后续若验证专用模型微批，仅将安全帽、姿态和烟火纳入范围；车牌检测与 OCR 的两阶段、可变数量链路暂不改造，也不进入该阶段的性能对比。
@@ -55,13 +55,13 @@ scripts/build_fp16_engines.sh --specialists-only
 
 ```bash
 cd <repository-root>
-python3 scripts/run_benchmark_matrix.py
+python3 scripts/benchmark/run_benchmark_matrix.py
 ```
 
 确认本机 FP16/INT8 engine、八路 MP4 和散热状态都准备好后：
 
 ```bash
-python3 scripts/run_benchmark_matrix.py --execute
+python3 scripts/benchmark/run_benchmark_matrix.py --execute
 ```
 
 输出位于 `outputs/benchmarks/<UTC时间>/`。每次运行保存独立的 `config.yaml`、`summary.json`（成功时）和总 `matrix_summary.json`。输出目录已被 Git 忽略。
@@ -69,7 +69,7 @@ python3 scripts/run_benchmark_matrix.py --execute
 若需要先小规模验证，可显式缩小矩阵；该结果不应写入正式 36 组表：
 
 ```bash
-python3 scripts/run_benchmark_matrix.py \
+python3 scripts/benchmark/run_benchmark_matrix.py \
   --stream-counts 1 --sinks fake --repetitions 1 --execute
 ```
 

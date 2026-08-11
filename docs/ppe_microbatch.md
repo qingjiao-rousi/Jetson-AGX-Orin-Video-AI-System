@@ -10,8 +10,8 @@ The batch-1 engine is the existing deployment engine. Build separate local
 engines for the two candidate profiles; engine files are ignored by Git.
 
 ```bash
-scripts/build_ppe_microbatch_engine.sh --max-batch 4
-scripts/build_ppe_microbatch_engine.sh --max-batch 8
+scripts/benchmark/build_ppe_microbatch_engine.sh --max-batch 4
+scripts/benchmark/build_ppe_microbatch_engine.sh --max-batch 8
 ```
 
 ## Run
@@ -19,13 +19,13 @@ scripts/build_ppe_microbatch_engine.sh --max-batch 8
 First create a dry-run plan:
 
 ```bash
-python3 scripts/run_ppe_microbatch_matrix.py --repetitions 1
+python3 scripts/benchmark/run_ppe_microbatch_matrix.py --repetitions 1
 ```
 
 Then execute three repetitions per batch size:
 
 ```bash
-python3 scripts/run_ppe_microbatch_matrix.py --execute --repetitions 3
+python3 scripts/benchmark/run_ppe_microbatch_matrix.py --execute --repetitions 3
 ```
 
 Results are written to `outputs/ppe_microbatch/<UTC timestamp>/`. Each run
