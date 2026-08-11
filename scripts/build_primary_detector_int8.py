@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Calibrate and build an INT8 TensorRT engine for YOLOv8s.
+"""Calibrate and build an INT8 TensorRT engine for the primary detector.
 
 The calibration images must use representative deployment frames. The
 default preprocessing matches the project's YOLO input path: RGB, letterbox
@@ -204,8 +204,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--onnx", type=Path, default=Path("export_yolov8_ds/yolov8s.onnx"))
     parser.add_argument("--images", type=Path, default=Path("calibration/yolov8s"))
-    parser.add_argument("--cache", type=Path, default=Path("models/yolov8s_calibration.cache"))
-    parser.add_argument("--engine", type=Path, default=Path("models/yolov8s_int8.engine"))
+    parser.add_argument("--cache", type=Path, default=Path("models/int8/primary_detector_calibration.cache"))
+    parser.add_argument("--engine", type=Path, default=Path("models/int8/primary_detector_int8.engine"))
     parser.add_argument(
         "--batch-size",
         type=int,

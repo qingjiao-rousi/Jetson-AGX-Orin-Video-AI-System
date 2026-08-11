@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", nargs="+", type=Path, required=True, help="Image/video files or directories, in deterministic order.")
     parser.add_argument("--fp16-engine", type=Path, default=Path("models/fp16/yolov8s.engine"))
-    parser.add_argument("--int8-engine", type=Path, default=Path("models/int8/yolov8s_int8.engine"))
+    parser.add_argument("--int8-engine", type=Path, default=Path("models/int8/yolov8s_coco_train504.engine"))
     parser.add_argument("--labels", type=Path, default=Path("models/labels.txt"))
     parser.add_argument("--class-ids", default="0", help="Comma-separated retained classes; default 0 matches the person-only deployment.")
     parser.add_argument("--confidence-threshold", type=float, default=0.25)

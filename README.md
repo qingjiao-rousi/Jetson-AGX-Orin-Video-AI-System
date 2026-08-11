@@ -64,7 +64,7 @@ scripts/build_custom_yolo_parser.sh
 主模型 INT8 校准构建示例：
 
 ```bash
-python3 scripts/build_yolov8s_int8.py \
+python3 scripts/build_primary_detector_int8.py \
   --onnx export_yolov8_ds/yolov8s.onnx \
   --images calibration/coco_train504/images \
   --batch-size 8 \

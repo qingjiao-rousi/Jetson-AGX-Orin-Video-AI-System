@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--images-dir", type=Path, required=True, help="COCO val2017 image directory.")
     parser.add_argument("--annotations", type=Path, required=True, help="instances_val2017.json path.")
     parser.add_argument("--fp16-engine", type=Path, default=Path("models/fp16/yolov8s.engine"))
-    parser.add_argument("--int8-engine", type=Path, default=Path("models/int8/yolov8s_int8.engine"))
+    parser.add_argument("--int8-engine", type=Path, default=Path("models/int8/yolov8s_coco_train504.engine"))
     parser.add_argument("--labels", type=Path, default=Path("models/labels.txt"))
     parser.add_argument("--max-images", type=int, default=0, help="0 evaluates all val2017 images; a positive value is a deterministic smoke subset.")
     parser.add_argument("--evaluation-confidence", type=float, default=0.001, help="Low score floor for COCO AP prediction files.")

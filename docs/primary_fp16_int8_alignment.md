@@ -27,7 +27,7 @@ mAP、Precision 或 Recall。
 cd <repository-root>
 source scripts/env.sh
 
-python3 scripts/align_primary_fp16_int8.py \
+python3 scripts/align_primary_detector_outputs.py \
   --input calibration/alignment \
   --fp16-engine models/fp16/yolov8s.engine \
   --int8-engine models/int8/yolov8s_int8.engine \
@@ -37,7 +37,7 @@ python3 scripts/align_primary_fp16_int8.py \
 也可从固定视频抽帧；`--video-stride 30` 表示每 30 帧取一帧：
 
 ```bash
-python3 scripts/align_primary_fp16_int8.py \
+python3 scripts/align_primary_detector_outputs.py \
   --input video/1.mp4 video/2.mp4 \
   --video-stride 30 \
   --max-frames 300

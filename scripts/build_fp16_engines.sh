@@ -37,7 +37,7 @@ for arg in "$@"; do
             ;;
         -h|--help)
             cat <<'USAGE'
-Usage: scripts/build_fp16_engines_trt107.sh [--primary-only|--specialists-only] [--force]
+Usage: scripts/build_fp16_engines.sh [--primary-only|--specialists-only] [--force]
 
 The primary YOLO engine is built with dynamic batch 1..8 for the DeepStream
 streammux benchmark. Specialist workers remain batch 1 and are built once.
@@ -71,7 +71,7 @@ build_engine() {
     local onnx_path="$1"
     local engine_path="$2"
     shift 2
-    local temporary="${engine_path}.trt107.tmp"
+    local temporary="${engine_path}.tmp"
 
     if [ "$FORCE_REBUILD" != 1 ] && plan_matches_runtime "$engine_path"; then
         echo "Keeping compatible engine: $engine_path"
