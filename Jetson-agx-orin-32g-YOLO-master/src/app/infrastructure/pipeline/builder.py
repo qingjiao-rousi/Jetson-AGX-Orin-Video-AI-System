@@ -511,9 +511,9 @@ class PipelineBuilder:
         return tuple(links)
 
     def _build_probes(self) -> tuple[tuple[str, str], ...]:
-        probes: list[tuple[str, str]] = []
-        if bool(getattr(self.settings.optimization, "enable_fps_control", True)):
-            probes.append(("primary-infer", "sink"))
+        # Latency instrumentation starts here. The gate remains a no-op when
+        # FPS control is disabled, but the probe is still needed for metrics.
+        probes: list[tuple[str, str]] = [("primary-infer", "sink")]
         if (
             getattr(self.settings.deepstream, "enable_osd", True)
             and bool(getattr(self.settings.deepstream, "enable_tiler", False))
@@ -838,6 +838,7 @@ class PipelineBuilder:
                     ),
                     "frame_gate": runtime.get("frame_gate"),
                     "frame_store": runtime.get("frame_store"),
+                    "runtime_metrics": runtime.get("runtime_metrics"),
                 }
                 try:
                     pad.add_probe(
@@ -898,6 +899,8 @@ class PipelineBuilder:
         if user_data.get("mode") == "pre_infer_gate":
             gate = user_data.get("frame_gate")
             dropped = gate() if gate is not None else False
+            if not dropped:
+                self._mark_pipeline_latency_start(info, user_data.get("runtime_metrics"))
             gst = self._runtime_factory.gst
             if gst is not None and hasattr(gst, "PadProbeReturn"):
                 return gst.PadProbeReturn.DROP if dropped else gst.PadProbeReturn.OK
@@ -917,6 +920,20 @@ class PipelineBuilder:
         if gst is not None and hasattr(gst, "PadProbeReturn"):
             return gst.PadProbeReturn.OK
         return 1
+
+    def _mark_pipeline_latency_start(self, info: object, runtime_metrics: object | None) -> None:
+        if runtime_metrics is None or not hasattr(runtime_metrics, "mark_pipeline_start"):
+            return
+        batch_meta = self._extract_nvds_batch_meta(info)
+        if batch_meta is None:
+            return
+        frame_list = getattr(batch_meta, "frame_meta_list", None)
+        for frame_meta in self._iterate_glist(frame_list, "NvDsFrameMeta"):
+            source_id = self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0))
+            runtime_metrics.mark_pipeline_start(
+                canonical_stream_id(self._safe_int(source_id, 0)),
+                self._safe_int(self._safe_get(frame_meta, "frame_num", 0), 0),
+            )
 
     def _capture_probe_frames(self, info: object, frame_store: object | None) -> None:
         """Copy only configured task streams out of the DeepStream surface."""

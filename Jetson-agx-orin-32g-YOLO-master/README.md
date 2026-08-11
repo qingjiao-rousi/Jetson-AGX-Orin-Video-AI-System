@@ -10,7 +10,7 @@
 - 安全帽、姿态、火焰烟雾、车牌检测使用 INT8 engine；车牌 OCR 当前保持 FP16。
 - `tegrastats` 指标、队列状态、GPU/温度/RAM/功耗记录，以及 systemd/日志轮转模板。
 
-当前没有声称：真实摄像头长时间稳定性、模型 mAP/Recall、FP16 与 INT8 的公平对比、端到端 P95 延迟。
+当前没有声称：真实摄像头长时间稳定性、模型 mAP/Recall、FP16 与 INT8 的公平对比，或任何未完成实验支持的 P95 延迟数值。
 
 ## 系统结构
 
@@ -49,7 +49,7 @@ scripts/install_jetson_deps.sh
 
 engine、ONNX、权重、校准图片和视频不属于公开代码提交。请根据模型许可证准备这些文件，并在本机生成 engine。
 
-INT8 正式配置：[configs/app/app_multifile_8_int8.yaml](configs/app/app_multifile_8_int8.yaml)
+主模型 A/B 基准配置：[configs/app/app_multifile_8_primary_int8.yaml](configs/app/app_multifile_8_primary_int8.yaml)。它只将主 YOLO 替换为 INT8，安全帽、姿态、烟火、车牌检测和 OCR 继续使用 FP16。`app_multifile_8_int8.yaml` 保留为后续全辅助模型 INT8 的场景配置，不用于当前主模型对照。
 
 主模型 INT8 校准构建示例：
 
@@ -64,22 +64,22 @@ python3 scripts/build_yolov8s_int8.py \
 
 该脚本使用 TensorRT `IInt8EntropyCalibrator2`，属于隐式 PTQ；警告中的缺失 scale 可能使部分层回退到非 INT8，不能把它表述为“全图完全 INT8”。`quantize_yolov8s_qdq.py` 是显式 Q/DQ 实验脚本，不是默认运行链路。
 
-## 运行 8 路 INT8 MP4
+## 运行 8 路主模型 INT8 MP4
 
 输入配置中的视频路径是项目目录外的 `../video/1.mp4` 到 `../video/8.mp4`。准备好本机 engine 和视频后：
 
 ```bash
 OUTPUT_SINK=file RUN_SECONDS=0 ENABLE_TEGRASTATS=1 \
 scripts/run_multistream.sh \
-  configs/app/app_multifile_8_int8.yaml \
-  outputs/int8_multifile_8streams
+  configs/app/app_multifile_8_primary_int8.yaml \
+  outputs/primary_int8_multifile_8streams
 ```
 
 输出目录包含 `output.mp4`、`results.jsonl`、`events.jsonl`、`runtime_metrics.jsonl` 和 `app.log`。
 
 ```bash
 python3 scripts/summarize_precision_run.py \
-  --run int8=outputs/int8_multifile_8streams \
+  --run primary_int8=outputs/primary_int8_multifile_8streams \
   --warmup-samples 5 \
   --output outputs/int8_summary.json
 ```
@@ -109,11 +109,11 @@ PYTHONPATH=src python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ## 实测记录
 
-修复 batch metadata 统计后，8 路本地 MP4 INT8 正常文件输出记录于 [projectMd/精度对比实验报告.md](projectMd/精度对比实验报告.md)：14,222 条结果帧、估算丢帧 0%、聚合处理 FPS 80.381。该数据只代表指定硬件、软件、视频和配置，不能替代 mAP 或公平的 FP16/INT8 对比。
+修复 batch metadata 统计后，8 路本地 MP4 INT8 正常文件输出记录于 [projectMd/精度对比实验报告.md](projectMd/精度对比实验报告.md)：14,222 条结果帧、估算丢帧 0%、聚合处理 FPS 80.381。该数据只代表指定硬件、软件、视频和配置，不能替代 mAP 或公平的 FP16/INT8 对比。性能实验的统一口径、P50/P95 定义和 36 组矩阵执行方式见 [../docs/benchmark.md](../docs/benchmark.md)。
 
 ## 已知限制与路线
 
 - 当前 OCR 仍为 FP16，INT8 是混合运行链路而非所有模型纯 INT8。
 - 缺少固定标注集，因此暂无 mAP、Precision、Recall、误检/漏检结果。
-- 需要补齐 1/4/8 路 FP16/INT8 基线、P95 延迟、真实 RTSP 长稳和故障注入。
+- 已埋点主推理前探针至 JSON 成功写入的 P50/P95；仍需按统一矩阵完成 1/4/8 路 FP16/INT8 实测、真实 RTSP 长稳和故障注入。
 - 需要将 benchmark 配置、环境信息、engine SHA256 和质量结果作为脱敏实验记录保存。

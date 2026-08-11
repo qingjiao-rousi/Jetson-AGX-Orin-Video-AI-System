@@ -90,11 +90,11 @@ class Orchestrator:
             self.fire_smoke_worker.stop()
         self.pipeline_manager.stop()
         self.gpu_monitor.stop()
+        self.json_writer.close()
         if hasattr(self.runtime_metrics, "close"):
             self.runtime_metrics.close()
         if self.event_writer is not None and hasattr(self.event_writer, "close"):
             self.event_writer.close()
-        self.json_writer.close()
         self._started = False
 
     def on_frame_result(self, result: FrameResult) -> None:
@@ -122,12 +122,12 @@ class Orchestrator:
                             request.frame_id,
                         )
                         self._logged_routing_tasks.add(request.task_name)
-            self.json_writer.write(result)
             if hasattr(self.runtime_metrics, "observe"):
                 self.runtime_metrics.observe(
                     result,
                     gpu_snapshot=self.gpu_monitor.snapshot() if hasattr(self.gpu_monitor, "snapshot") else None,
                 )
+            self.json_writer.write(result)
         except Exception as exc:
             message = f"frame result handler failed: {exc}"
             logging.exception("frame result handler failed")

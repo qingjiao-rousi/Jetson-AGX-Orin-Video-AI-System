@@ -24,10 +24,14 @@ class PipelineManager:
         self._stop_event = Event()
         self._bus_thread: Thread | None = None
         self._frame_gate = None
+        self._runtime_metrics = None
 
     def set_frame_gate(self, gate) -> None:
         """Set a pre-inference buffer gate, typically the FPS controller."""
         self._frame_gate = gate
+
+    def set_runtime_metrics(self, runtime_metrics) -> None:
+        self._runtime_metrics = runtime_metrics
 
     def register_plate_annotation(self, stream_id: str, track_id: int, event: dict) -> None:
         if hasattr(self._builder, "register_plate_annotation"):
@@ -41,6 +45,7 @@ class PipelineManager:
         self._runtime["meta_parser"] = self._meta_parser
         self._runtime["frame_store"] = self._frame_store
         self._runtime["frame_gate"] = self._frame_gate
+        self._runtime["runtime_metrics"] = self._runtime_metrics
         self._register_probe_points()
         self._pipeline = self._runtime["blueprint"]
         self._stop_event.clear()

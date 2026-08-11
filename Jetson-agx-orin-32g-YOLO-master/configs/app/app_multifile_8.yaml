@@ -16,10 +16,10 @@ scenes:
 models:
   primary:
     backend: deepstream_nvinfer
-    engine: models/yolov8s.engine
+    engine: models/fp16/yolov8s.engine
   helmet:
     backend: tensorrt
-    engine: models/ppe_yolov8n_dynamic_fp16.engine
+    engine: models/fp16/ppe_yolov8n_dynamic_fp16.engine
     labels: models/ppe_labels.txt
     input_width: 640
     input_height: 640
@@ -27,18 +27,18 @@ models:
     nms_iou_threshold: 0.45
   pose:
     backend: tensorrt
-    engine: models/v8_n_pose_fp16.engine
+    engine: models/fp16/v8_n_pose_fp16.engine
     input_width: 640
     input_height: 640
   fire_smoke:
     backend: tensorrt
-    engine: models/fire_smoke_best_fp16.engine
+    engine: models/fp16/fire_smoke_best_fp16.engine
     labels: models/fire_smoke_labels.txt
     input_width: 640
     input_height: 640
   plate_detector:
     backend: tensorrt
-    engine: models/plate_detector_fastalpr.engine
+    engine: models/fp16/plate_detector_fastalpr.engine
     input_width: 384
     input_height: 384
   plate_ocr:
@@ -207,7 +207,7 @@ deepstream:
   output_sink: file
   output_url: rtmp://127.0.0.1/live/stream
   output_video_path: outputs/multifile_inproc/multifile_preview.mp4
-  model_engine_path: models/yolov8s.engine
+  model_engine_path: models/fp16/yolov8s.engine
   custom_lib_path: custom_libs/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
   tracker_config_path: configs/deepstream/tracker_iou.yml
   infer_config_path: configs/deepstream/infer_primary_yolo_minimal.txt

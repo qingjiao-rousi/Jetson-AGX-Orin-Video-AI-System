@@ -4,6 +4,7 @@ import json
 import os
 import resource
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -31,16 +32,32 @@ class RuntimeMetricsRecorder:
         self._file = None
         self._started_at = 0.0
         self._last_emit_at = 0.0
+        self._last_gpu_snapshot: dict[str, object] = {}
         self._total_frames = 0
         self._streams: dict[str, dict[str, Any]] = {}
         self._probe_metrics_provider = None
         self._control_metrics_provider = None
+        self._queue_metrics_provider = None
+        self._pending_pipeline: dict[tuple[str, int], float] = {}
+        self._pending_result_write: dict[tuple[str, int], float] = {}
+        self._pipeline_latency_ms: deque[float] = deque(maxlen=20_000)
+        self._writer_latency_ms: deque[float] = deque(maxlen=20_000)
+        self._end_to_end_latency_ms: deque[float] = deque(maxlen=20_000)
+        self._unmatched_results = 0
+        self._unmatched_writes = 0
+        self._evicted_pending_starts = 0
+        self._evicted_pending_results = 0
+        self._pending_limit = 20_000
 
     def set_probe_metrics_provider(self, provider) -> None:
         self._probe_metrics_provider = provider
 
     def set_control_metrics_provider(self, provider) -> None:
         self._control_metrics_provider = provider
+
+    def set_queue_metrics_provider(self, provider) -> None:
+        """Register bounded-queue stats without coupling metrics to components."""
+        self._queue_metrics_provider = provider
 
     def start(self) -> None:
         self._started_at = time.monotonic()
@@ -52,6 +69,9 @@ class RuntimeMetricsRecorder:
     def observe(self, result: FrameResult, *, gpu_snapshot: dict[str, object] | None = None) -> None:
         now = time.monotonic()
         with self._lock:
+            if gpu_snapshot:
+                self._last_gpu_snapshot = dict(gpu_snapshot)
+            self._record_result_latency_locked(result, now)
             self._total_frames += 1
             stream = self._streams.setdefault(
                 result.stream_id,
@@ -91,8 +111,59 @@ class RuntimeMetricsRecorder:
 
     def close(self) -> None:
         with self._lock:
+            if self._started_at > 0:
+                self._emit_locked(time.monotonic(), gpu_snapshot=self._last_gpu_snapshot)
             if self._file is not None and not self._file.closed:
                 self._file.close()
+
+    def mark_pipeline_start(self, stream_id: str, frame_id: int) -> None:
+        """Mark a frame immediately before primary inference.
+
+        This uses a monotonic clock and measures application processing time,
+        not camera capture-to-display latency.
+        """
+        key = (str(stream_id), int(frame_id))
+        with self._lock:
+            self._bounded_store_locked(self._pending_pipeline, key, time.monotonic(), "start")
+
+    def mark_result_written(self, result: FrameResult) -> None:
+        """Mark asynchronous JSON persistence after the writer commits a row."""
+        key = (result.stream_id, int(result.frame_id))
+        now = time.monotonic()
+        with self._lock:
+            result_started = self._pending_result_write.pop(key, None)
+            if result_started is None:
+                self._unmatched_writes += 1
+                return
+            self._writer_latency_ms.append((now - result_started) * 1000.0)
+            pipeline_started = self._pending_pipeline.pop(key, None)
+            if pipeline_started is not None:
+                self._end_to_end_latency_ms.append((now - pipeline_started) * 1000.0)
+
+    def _record_result_latency_locked(self, result: FrameResult, now: float) -> None:
+        key = (result.stream_id, int(result.frame_id))
+        pipeline_started = self._pending_pipeline.get(key)
+        if pipeline_started is None:
+            self._unmatched_results += 1
+        else:
+            self._pipeline_latency_ms.append((now - pipeline_started) * 1000.0)
+        self._bounded_store_locked(self._pending_result_write, key, now, "result")
+
+    def _bounded_store_locked(
+        self,
+        target: dict[tuple[str, int], float],
+        key: tuple[str, int],
+        value: float,
+        kind: str,
+    ) -> None:
+        if key not in target and len(target) >= self._pending_limit:
+            oldest_key = next(iter(target))
+            target.pop(oldest_key, None)
+            if kind == "start":
+                self._evicted_pending_starts += 1
+            else:
+                self._evicted_pending_results += 1
+        target[key] = value
 
     def _mark_stale_streams(self, now: float) -> None:
         for stream in self._streams.values():
@@ -123,9 +194,22 @@ class RuntimeMetricsRecorder:
             "total_frames": self._total_frames,
             "processing_fps": round(self._total_frames / elapsed, 3),
             "process": _process_snapshot(),
-            "gpu": gpu_snapshot or {},
+            "gpu": gpu_snapshot or self._last_gpu_snapshot,
             "probe": self._probe_metrics_provider() if self._probe_metrics_provider else {},
             "controls": self._control_metrics_provider() if self._control_metrics_provider else {},
+            "queues": self._queue_metrics_provider() if self._queue_metrics_provider else {},
+            "latency": {
+                "definition": "primary_infer_sink_to_json_write_ms",
+                "pipeline": _latency_summary(self._pipeline_latency_ms),
+                "json_writer": _latency_summary(self._writer_latency_ms),
+                "end_to_end": _latency_summary(self._end_to_end_latency_ms),
+                "unmatched_results": self._unmatched_results,
+                "unmatched_writes": self._unmatched_writes,
+                "pending_pipeline_frames": len(self._pending_pipeline),
+                "pending_writer_frames": len(self._pending_result_write),
+                "evicted_pending_starts": self._evicted_pending_starts,
+                "evicted_pending_results": self._evicted_pending_results,
+            },
             "streams": {
                 stream_id: _stream_payload(stream, now)
                 for stream_id, stream in sorted(self._streams.items())
@@ -171,6 +255,30 @@ def _process_snapshot() -> dict[str, Any]:
         "system_cpu_seconds": round(float(usage.ru_stime), 3),
         "max_rss_kb": int(usage.ru_maxrss),
     }
+
+
+def _latency_summary(samples: deque[float]) -> dict[str, float | int | None]:
+    values = sorted(samples)
+    if not values:
+        return {"samples": 0, "average_ms": None, "p50_ms": None, "p95_ms": None, "max_ms": None}
+    return {
+        "samples": len(values),
+        "average_ms": round(sum(values) / len(values), 3),
+        "p50_ms": round(_percentile(values, 50), 3),
+        "p95_ms": round(_percentile(values, 95), 3),
+        "max_ms": round(values[-1], 3),
+    }
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    """Linear-interpolated percentile for a finite in-memory sample set."""
+    if len(values) == 1:
+        return values[0]
+    position = (len(values) - 1) * percentile / 100.0
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    fraction = position - lower
+    return values[lower] + (values[upper] - values[lower]) * fraction
 
 
 def _utc_now() -> str:

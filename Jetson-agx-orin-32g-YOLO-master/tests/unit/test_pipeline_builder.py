@@ -255,6 +255,20 @@ class PipelineBuilderRuntimeTests(unittest.TestCase):
                 ),
             )
 
+    def test_primary_infer_probe_is_registered_when_fps_control_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sample = Path(tmp) / "sample.mp4"
+            sample.write_bytes(b"sample")
+            settings = AppSettings(
+                source_count=1,
+                sources=(SourceSettings(name="file", uri=str(sample), kind="file", enabled=True),),
+                optimization=OptimizationSettings(enable_fps_control=False),
+            )
+
+            blueprint = PipelineBuilder(settings).build()
+
+        self.assertIn(("primary-infer", "sink"), blueprint.probes)
+
     def test_rtsp_output_uses_h264_payloader_and_configured_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             sample = Path(tmp) / "sample.mp4"

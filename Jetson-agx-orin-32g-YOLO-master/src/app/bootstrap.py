@@ -65,7 +65,9 @@ def create_application(config_path: Path, settings=None) -> Application:
         queue_size=settings.optimization.max_queue_size,
         drop_oldest=settings.optimization.enable_drop_old_frames,
         on_error=pipeline_manager.set_error,
-        on_written=backpressure_controller.mark_consumed,
+        on_written=lambda result: _mark_result_written(
+            backpressure_controller, runtime_metrics, result
+        ),
     )
     event_writer = EventWriter(settings.output.events_jsonl_path)
     gpu_monitor = GpuMonitor()
@@ -76,6 +78,7 @@ def create_application(config_path: Path, settings=None) -> Application:
         keepalive_timeout_ms=settings.deepstream.last_frame_keepalive_timeout_ms,
     )
     runtime_metrics.set_probe_metrics_provider(pipeline_builder.probe_metrics)
+    pipeline_manager.set_runtime_metrics(runtime_metrics)
     fps_controller = FpsController(settings.optimization)
     runtime_metrics.set_control_metrics_provider(
         lambda: {
@@ -90,6 +93,13 @@ def create_application(config_path: Path, settings=None) -> Application:
 
     routing_policy = RoutingPolicy(settings)
     task_buffer = TaskRequestBuffer(settings.optimization.max_queue_size)
+    runtime_metrics.set_queue_metrics_provider(
+        lambda: {
+            "writer": json_writer.stats(),
+            "task_buffer": task_buffer.stats(),
+            "frame_store": frame_store.stats(),
+        }
+    )
     helmet_model = next(
         (model for model in settings.models if model.name == "helmet" and model.enabled),
         None,
@@ -145,3 +155,9 @@ def create_application(config_path: Path, settings=None) -> Application:
         debug_service=debug_service,
         dashboard_server=dashboard_server,
     )
+
+
+def _mark_result_written(backpressure_controller, runtime_metrics, result) -> None:
+    backpressure_controller.mark_consumed()
+    if hasattr(runtime_metrics, "mark_result_written"):
+        runtime_metrics.mark_result_written(result)

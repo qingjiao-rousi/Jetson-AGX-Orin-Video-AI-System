@@ -72,6 +72,16 @@ class JsonWriterTests(unittest.TestCase):
         self.assertEqual([json.loads(row)["frame_id"] for row in rows], [1, 3])
         self.assertFalse(stats["worker_alive"])
 
+    def test_written_callback_receives_committed_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            written = []
+            writer = JsonWriter(Path(tmp) / "results.jsonl", on_written=written.append)
+            result = FrameResult("stream-0", 7, datetime.now(timezone.utc))
+            writer.write(result)
+            writer.close()
+
+        self.assertEqual(written, [result])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -49,6 +49,15 @@ def average(rows: list[dict[str, Any]], *keys: str) -> float | None:
     return round(mean(values), 4) if values else None
 
 
+def nested_value(payload: dict[str, Any], *keys: str, default=None):
+    value: Any = payload
+    for key in keys:
+        if not isinstance(value, dict):
+            return default
+        value = value.get(key)
+    return default if value is None else value
+
+
 def summarize(name: str, output_dir: Path, warmup_samples: int) -> dict[str, Any]:
     metrics = read_jsonl(output_dir / "runtime_metrics.jsonl")
     results = read_jsonl(output_dir / "results.jsonl")
@@ -56,6 +65,9 @@ def summarize(name: str, output_dir: Path, warmup_samples: int) -> dict[str, Any
 
     usable_metrics = metrics[warmup_samples:] if len(metrics) > warmup_samples else metrics
     last = metrics[-1] if metrics else {}
+    latency = nested_value(last, "latency", default={})
+    queues = nested_value(last, "queues", default={})
+    controls = nested_value(last, "controls", default={})
 
     detection_totals: Counter[str] = Counter()
     track_totals: Counter[str] = Counter()
@@ -106,6 +118,28 @@ def summarize(name: str, output_dir: Path, warmup_samples: int) -> dict[str, Any
             "average_gpu_soc_power_avg_mw": average(usable_metrics, "gpu", "power_gpu_soc_avg_mw"),
             "average_ram_used_mb": average(usable_metrics, "gpu", "ram_used_mb"),
             "max_process_rss_mb": round((last.get("process", {}).get("max_rss_kb", 0) or 0) / 1024, 2),
+        },
+        "latency": {
+            "definition": nested_value(latency, "definition"),
+            "pipeline_p50_ms": nested_value(latency, "pipeline", "p50_ms"),
+            "pipeline_p95_ms": nested_value(latency, "pipeline", "p95_ms"),
+            "pipeline_samples": nested_value(latency, "pipeline", "samples", default=0),
+            "json_writer_p50_ms": nested_value(latency, "json_writer", "p50_ms"),
+            "json_writer_p95_ms": nested_value(latency, "json_writer", "p95_ms"),
+            "end_to_end_p50_ms": nested_value(latency, "end_to_end", "p50_ms"),
+            "end_to_end_p95_ms": nested_value(latency, "end_to_end", "p95_ms"),
+            "end_to_end_samples": nested_value(latency, "end_to_end", "samples", default=0),
+            "unmatched_results": nested_value(latency, "unmatched_results", default=0),
+            "unmatched_writes": nested_value(latency, "unmatched_writes", default=0),
+        },
+        "drop_and_queue_stats": {
+            "writer_dropped": nested_value(queues, "writer", "dropped", default=0),
+            "writer_write_errors": nested_value(queues, "writer", "write_errors", default=0),
+            "task_buffer_dropped": nested_value(queues, "task_buffer", "dropped", default=0),
+            "frame_store_dropped": nested_value(queues, "frame_store", "dropped", default=0),
+            "fps_controller_dropped": nested_value(controls, "fps", "dropped_frames", default=0),
+            "fps_controller_drop_ratio": nested_value(controls, "fps", "drop_ratio", default=0.0),
+            "backpressure_max_pending": nested_value(controls, "backpressure", "max_pending_ever", default=0),
         },
         "predictions": {
             "result_rows": len(results),

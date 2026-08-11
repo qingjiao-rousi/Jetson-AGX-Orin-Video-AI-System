@@ -126,7 +126,10 @@ def build_engine(
     engine_path: Path,
     cache_path: Path,
     image_dir: Path,
-    batch_size: int,
+    calibration_batch_size: int,
+    min_batch_size: int,
+    opt_batch_size: int,
+    max_batch_size: int,
     workspace_gib: int,
     input_width: int | None,
     input_height: int | None,
@@ -134,8 +137,16 @@ def build_engine(
     image_paths = sorted(
         path for path in image_dir.iterdir() if path.suffix.lower() in {".jpg", ".jpeg", ".png"}
     )
-    if len(image_paths) < batch_size:
-        raise RuntimeError(f"need at least {batch_size} calibration images, found {len(image_paths)}")
+    if len(image_paths) < calibration_batch_size:
+        raise RuntimeError(
+            f"need at least {calibration_batch_size} calibration images, found {len(image_paths)}"
+        )
+    if not min_batch_size <= opt_batch_size <= max_batch_size:
+        raise RuntimeError("batch sizes must satisfy min <= opt <= max")
+    if calibration_batch_size != opt_batch_size:
+        raise RuntimeError(
+            "calibration batch size must match the optimization-profile opt batch size"
+        )
 
     builder = trt.Builder(TRT_LOGGER)
     network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
@@ -145,11 +156,9 @@ def build_engine(
         errors = "\n".join(str(parser.get_error(i)) for i in range(parser.num_errors))
         raise RuntimeError(f"failed to parse ONNX model:\n{errors}")
 
-    # 替换原来的检查代码（第2-4行）
     input_tensor = network.get_input(0)
     input_shape = tuple(input_tensor.shape)
 
-    # 修改为更灵活的检查
     if len(input_shape) != 4:
         raise RuntimeError(f"expected 4D input, got {len(input_shape)}D")
 
@@ -165,25 +174,31 @@ def build_engine(
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, workspace_gib * (1 << 30))
     config.set_flag(trt.BuilderFlag.INT8)
-    config.int8_calibrator = ImageCalibrator(image_paths, batch_size, cache_path, w, h)
+    config.int8_calibrator = ImageCalibrator(
+        image_paths, calibration_batch_size, cache_path, w, h
+    )
 
-    # 总是使用 profile 来处理动态输入
+    # Keep calibration at the opt batch while allowing DeepStream to submit
+    # 1, 4, or 8 frames from the same serialized engine.
     profile = builder.create_optimization_profile()
-    shape = (batch_size, 3, h, w)  # 使用提取的 h 和 w
-    profile.set_shape(input_tensor.name, shape, shape, shape)
+    min_shape = (min_batch_size, 3, h, w)
+    opt_shape = (opt_batch_size, 3, h, w)
+    max_shape = (max_batch_size, 3, h, w)
+    profile.set_shape(input_tensor.name, min_shape, opt_shape, max_shape)
     config.add_optimization_profile(profile)
     if hasattr(config, "set_calibration_profile"):
         config.set_calibration_profile(profile)
-        # ========== 添加以下代码 ==========
-    print(f"Building INT8 engine from {onnx_path}")
+    print(
+        f"Building INT8 engine from {onnx_path} "
+        f"with batch profile min/opt/max={min_batch_size}/{opt_batch_size}/{max_batch_size}"
+    )
     serialized = builder.build_serialized_network(network, config)
     if serialized is None:
         raise RuntimeError("TensorRT failed to build the INT8 engine")
-    
+
     engine_path.parent.mkdir(parents=True, exist_ok=True)
     engine_path.write_bytes(bytes(serialized))
     print(f"Wrote INT8 engine: {engine_path}")
-    # ========== 添加结束 ==========
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -191,7 +206,15 @@ def main() -> int:
     parser.add_argument("--images", type=Path, default=Path("calibration/yolov8s"))
     parser.add_argument("--cache", type=Path, default=Path("models/yolov8s_calibration.cache"))
     parser.add_argument("--engine", type=Path, default=Path("models/yolov8s_int8.engine"))
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Calibration batch size; it must match --opt-batch-size.",
+    )
+    parser.add_argument("--min-batch-size", type=int, default=1)
+    parser.add_argument("--opt-batch-size", type=int, default=8)
+    parser.add_argument("--max-batch-size", type=int, default=8)
     parser.add_argument("--workspace-gib", type=int, default=4)
     parser.add_argument("--input-width", type=int, help="Override the ONNX input width for dynamic models.")
     parser.add_argument("--input-height", type=int, help="Override the ONNX input height for dynamic models.")
@@ -207,6 +230,9 @@ def main() -> int:
         args.cache,
         args.images,
         max(args.batch_size, 1),
+        max(args.min_batch_size, 1),
+        max(args.opt_batch_size, 1),
+        max(args.max_batch_size, 1),
         max(args.workspace_gib, 1),
         args.input_width,
         args.input_height,
