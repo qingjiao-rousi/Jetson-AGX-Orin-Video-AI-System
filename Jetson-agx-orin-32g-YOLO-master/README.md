@@ -62,8 +62,6 @@ python3 scripts/build_yolov8s_int8.py \
   --engine models/int8/yolov8s_int8.engine
 ```
 
-该脚本使用 TensorRT `IInt8EntropyCalibrator2`，属于隐式 PTQ；警告中的缺失 scale 可能使部分层回退到非 INT8，不能把它表述为“全图完全 INT8”。`quantize_yolov8s_qdq.py` 是显式 Q/DQ 实验脚本，不是默认运行链路。
-
 ## 运行 8 路主模型 INT8 MP4
 
 输入配置中的视频路径是项目目录外的 `../video/1.mp4` 到 `../video/8.mp4`。准备好本机 engine 和视频后：
@@ -113,7 +111,5 @@ PYTHONPATH=src python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ## 已知限制与路线
 
-- 当前 OCR 仍为 FP16，INT8 是混合运行链路而非所有模型纯 INT8。
-- 缺少固定标注集，因此暂无 mAP、Precision、Recall、误检/漏检结果。
 - 已埋点主推理前探针至 JSON 成功写入的 P50/P95；仍需按统一矩阵完成 1/4/8 路 FP16/INT8 实测、真实 RTSP 长稳和故障注入。
 - 需要将 benchmark 配置、环境信息、engine SHA256 和质量结果作为脱敏实验记录保存。
