@@ -19,4 +19,10 @@ auto.crt
 *.pfx
 calibration/
 *.cache
+*.engine
 *.engine.before_batch8
+*.onnx
+*.so
+*.data
+t-inspect-*
+models/**/*.tmp
