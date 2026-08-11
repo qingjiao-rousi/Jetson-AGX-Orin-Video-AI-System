@@ -2,7 +2,7 @@
 
 This experiment changes only the helmet/PPE worker. The primary detector stays
 INT8 and all other specialist models remain FP16. It compares PPE batch sizes
-1, 4, and 8 using the same eight local MP4 inputs and `fake` sink.
+using the same eight local MP4 inputs and `fake` sink.
 
 ## Build Local Engines
 
@@ -13,6 +13,10 @@ engines for the two candidate profiles; engine files are ignored by Git.
 scripts/benchmark/build_ppe_microbatch_engine.sh --max-batch 4
 scripts/benchmark/build_ppe_microbatch_engine.sh --max-batch 8
 ```
+
+The batch-4 profile accepts runtime batch `1..4`, so it also supports the
+batch-2 trial without rebuilding another engine. The runner selects that
+profile automatically for batch 2.
 
 ## Run
 
@@ -28,6 +32,21 @@ Then execute three repetitions per batch size:
 python3 scripts/benchmark/run_ppe_microbatch_matrix.py --execute --repetitions 3
 ```
 
+For the isolated-queue follow-up, compare only batch 1 and 2 first. The
+batch-2 worker still uses the batch-4 profile, but its runtime maximum is 2:
+
+```bash
+python3 scripts/benchmark/run_ppe_microbatch_matrix.py \
+  --base-config configs/app/app_multifile_8_primary_int8_isolated_tasks.yaml \
+  --batch-sizes 1,2 \
+  --wait-ms 0 \
+  --repetitions 3 \
+  --run-seconds 0 \
+  --sink fake \
+  --output-root outputs/ppe_b2_isolated \
+  --execute
+```
+
 Results are written to `outputs/ppe_microbatch/<UTC timestamp>/`. Each run
 contains its generated config, normal runtime artifacts, and `summary.json`.
 The matrix `matrix_summary.json` contains aggregate throughput, PPE queue/task
@@ -37,8 +56,11 @@ latency, batch-size distribution, task/frame-store drops, and event signatures.
 
 A candidate is useful only when it reduces PPE task drops or raises PPE
 processed count while keeping task P95 bounded and producing no unexplained
-batch-1-only or candidate-only helmet events. It is normal for the average
-batch to remain below the configured maximum when task arrivals are sparse.
+batch-1-only or candidate-only helmet-alert coverage. The matrix compares only
+coarse `helmet_violation` keys `(stream_id, status)`: tracker IDs and exact
+confirmation frames may vary across end-of-stream repetitions. It is normal
+for the average batch to remain below the configured maximum when task arrivals
+are sparse.
 
 This experiment does not prove model accuracy. It checks event consistency on
 the same input workload; label-based accuracy still requires ground truth.
@@ -67,3 +89,24 @@ Decision: the checked-in deployment configuration explicitly keeps PPE at
 matrix runner remain experimental tools, not production defaults. A future
 trial may test batch 2 only if reducing PPE drops is more important than alert
 latency; it must again report task P50/P95 and event behaviour.
+
+## 2026-08-11 Isolated-Queue Batch-2 Result
+
+Result source: `outputs/ppe_b2_isolated/20260811T140057Z/matrix_summary.json`.
+This follow-up kept the independent task queues and stale deadlines, then
+compared PPE worker maximum batch 1 and 2 with `micro_batch_wait_ms: 0`. Batch
+2 used the existing dynamic batch-4 profile, but the worker itself accepted at
+most two requests.
+
+| PPE maximum batch | Actual average batch | System FPS | PPE P50 / P95 task latency (ms) | PPE processed | PPE missing frames | PPE task-buffer drops |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.00 | 67.76 | 343.34 / 625.93 | 451.33 | 127.00 | 3755.67 |
+| 2 | 1.87 | 65.81 | 484.83 / 808.18 | 574.67 | 151.67 | 3542.67 |
+
+Batch 2 was exercised, increased PPE processed requests and reduced task-buffer
+drops, but raised PPE P95 task latency by about 29% and lowered system FPS by
+about 3%. It also produced different helmet-alert coverage on the same input;
+without labelled event ground truth, this cannot be classified as an accuracy
+improvement. Decision: retain PPE batch 1 / wait 0 as the deployment default;
+do not test batch 2 with an additional 5 ms aggregation wait, because its
+batch utilization is already high and the added wait would worsen latency.

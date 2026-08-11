@@ -49,6 +49,8 @@ class OptimizationSettings:
     enable_backpressure: bool = True
     enable_drop_old_frames: bool = True
     stale_after_seconds: float = 5.0
+    frame_store_max_size: int | None = None
+    frame_store_per_stream_capacity: int | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,8 @@ class ModelTaskSettings:
     frame_trigger: bool = False
     micro_batch_size: int = 1
     micro_batch_wait_ms: int = 0
+    queue_size: int | None = None
+    stale_after_ms: int | None = None
     enabled: bool = True
 
 
@@ -200,6 +204,13 @@ class AppSettings:
             raise ValueError("web.log_buffer_size must be greater than zero")
         if self.output.enable_mqtt and not self.output.mqtt_host:
             raise ValueError("mqtt_host must be set when MQTT output is enabled")
+        if self.optimization.frame_store_max_size is not None and self.optimization.frame_store_max_size <= 0:
+            raise ValueError("frame_store_max_size must be greater than zero")
+        if (
+            self.optimization.frame_store_per_stream_capacity is not None
+            and self.optimization.frame_store_per_stream_capacity <= 0
+        ):
+            raise ValueError("frame_store_per_stream_capacity must be greater than zero")
         scene_names = {scene.name for scene in self.scenes if scene.enabled}
         if len(scene_names) != len(tuple(scene.name for scene in self.scenes if scene.enabled)):
             raise ValueError("scene names must be unique")
@@ -241,6 +252,10 @@ class AppSettings:
                 raise ValueError(f"model task `{task.name}` micro_batch_size must be greater than zero")
             if task.micro_batch_wait_ms < 0:
                 raise ValueError(f"model task `{task.name}` micro_batch_wait_ms must not be negative")
+            if task.queue_size is not None and task.queue_size <= 0:
+                raise ValueError(f"model task `{task.name}` queue_size must be greater than zero")
+            if task.stale_after_ms is not None and task.stale_after_ms <= 0:
+                raise ValueError(f"model task `{task.name}` stale_after_ms must be greater than zero")
         for model in self.models:
             if model.input_width <= 0 or model.input_height <= 0:
                 raise ValueError(f"model `{model.name}` input size must be greater than zero")

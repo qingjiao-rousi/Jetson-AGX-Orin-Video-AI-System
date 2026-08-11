@@ -34,6 +34,20 @@ class FrameStoreTests(unittest.TestCase):
         self.assertEqual(stats["evicted_by_stream"], {"stream-0": 1})
         self.assertEqual(stats["pending_frames"], 1)
 
+    def test_per_stream_capacity_preserves_other_stream_frames(self) -> None:
+        store = FrameStore(max_size=4, max_per_stream=2)
+        frame = np.zeros((2, 2, 3), dtype=np.uint8)
+        store.put("stream-0", 1, frame)
+        store.put("stream-0", 2, frame)
+        store.put("stream-1", 1, frame)
+        store.put("stream-0", 3, frame)
+        self.assertIsNone(store.get("stream-0", 1))
+        self.assertIsNotNone(store.get("stream-1", 1))
+        stats = store.stats()
+        self.assertEqual(stats["pending_by_stream"], {"stream-0": 2, "stream-1": 1})
+        self.assertEqual(stats["evicted_per_stream"], 1)
+        self.assertEqual(stats["evicted_global"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

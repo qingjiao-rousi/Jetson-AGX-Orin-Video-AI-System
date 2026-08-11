@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 from threading import Lock
 import time
 from typing import Iterable
@@ -14,16 +14,28 @@ from app.domain.entities import canonical_stream_id
 class FrameStore:
     """Bounded source-frame cache used by ROI tasks outside the probe thread."""
 
-    def __init__(self, capture_stream_ids: Iterable[str] = (), max_size: int = 128) -> None:
+    def __init__(
+        self,
+        capture_stream_ids: Iterable[str] = (),
+        max_size: int = 128,
+        max_per_stream: int | None = None,
+    ) -> None:
         self._capture_stream_ids = {canonical_stream_id(value) for value in capture_stream_ids}
         self._max_size = max(int(max_size), 1)
+        self._max_per_stream = (
+            max(int(max_per_stream), 1) if max_per_stream is not None else None
+        )
         self._lock = Lock()
-        self._order: deque[tuple[str, int]] = deque()
+        self._order: OrderedDict[tuple[str, int], None] = OrderedDict()
+        self._order_by_stream: dict[str, OrderedDict[tuple[str, int], None]] = {}
         self._frames: dict[tuple[str, int], tuple[np.ndarray, float, int]] = {}
         self._evicted = 0
         self._puts = 0
         self._pending_bytes = 0
         self._evicted_by_stream: dict[str, int] = {}
+        self._evicted_global = 0
+        self._evicted_per_stream = 0
+        self._pending_by_stream: dict[str, int] = {}
         self._consumer_hits: dict[str, int] = {}
         self._consumer_misses: dict[str, int] = {}
         self._consumer_frame_age_ms: dict[str, deque[float]] = {}
@@ -44,17 +56,22 @@ class FrameStore:
                 self._pending_bytes += int(copied.nbytes) - previous[2]
                 self._frames[key] = (copied, time.monotonic(), int(copied.nbytes))
                 return
+            stream_order = self._order_by_stream.setdefault(key[0], OrderedDict())
+            while (
+                self._max_per_stream is not None
+                and self._pending_by_stream.get(key[0], 0) >= self._max_per_stream
+            ):
+                old_key = next(iter(stream_order))
+                self._evict_locked(old_key, reason="per_stream")
             while len(self._frames) >= self._max_size:
-                old_key = self._order.popleft()
-                previous = self._frames.pop(old_key, None)
-                if previous is not None:
-                    self._pending_bytes -= previous[2]
-                    self._evicted += 1
-                    self._evicted_by_stream[old_key[0]] = self._evicted_by_stream.get(old_key[0], 0) + 1
+                old_key = next(iter(self._order))
+                self._evict_locked(old_key, reason="global")
             copied = image.copy()
             self._frames[key] = (copied, time.monotonic(), int(copied.nbytes))
             self._pending_bytes += int(copied.nbytes)
-            self._order.append(key)
+            self._pending_by_stream[key[0]] = self._pending_by_stream.get(key[0], 0) + 1
+            self._order[key] = None
+            stream_order[key] = None
 
     def get(self, stream_id: str, frame_id: int, *, consumer: str | None = None) -> np.ndarray | None:
         key = (canonical_stream_id(stream_id), int(frame_id))
@@ -82,9 +99,13 @@ class FrameStore:
                 "pending_frames": len(self._frames),
                 "pending_bytes": self._pending_bytes,
                 "max_size": self._max_size,
+                "max_per_stream": self._max_per_stream,
+                "pending_by_stream": dict(sorted(self._pending_by_stream.items())),
                 "evicted": self._evicted,
                 "dropped": self._evicted,
                 "evicted_by_stream": dict(sorted(self._evicted_by_stream.items())),
+                "evicted_global": self._evicted_global,
+                "evicted_per_stream": self._evicted_per_stream,
                 "by_consumer": {
                     name: {
                         "hits": self._consumer_hits.get(name, 0),
@@ -105,6 +126,25 @@ class FrameStore:
         if consumer is None:
             return
         self._consumer_misses[consumer] = self._consumer_misses.get(consumer, 0) + 1
+
+    def _evict_locked(self, key: tuple[str, int], *, reason: str) -> None:
+        previous = self._frames.pop(key, None)
+        self._order.pop(key, None)
+        stream_order = self._order_by_stream.get(key[0])
+        if stream_order is not None:
+            stream_order.pop(key, None)
+        if previous is None:
+            return
+        self._pending_bytes -= previous[2]
+        self._pending_by_stream[key[0]] = self._pending_by_stream.get(key[0], 1) - 1
+        if self._pending_by_stream[key[0]] <= 0:
+            del self._pending_by_stream[key[0]]
+        self._evicted += 1
+        self._evicted_by_stream[key[0]] = self._evicted_by_stream.get(key[0], 0) + 1
+        if reason == "per_stream":
+            self._evicted_per_stream += 1
+        else:
+            self._evicted_global += 1
 
 
 def _sample_summary(values: Iterable[float]) -> dict[str, float | int | None]:

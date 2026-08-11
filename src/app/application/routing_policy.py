@@ -220,18 +220,30 @@ class RoutingPolicy:
 
 
 class TaskRequestBuffer:
-    """Bounded latest-task buffer for the next inference execution step."""
+    """Per-task bounded latest-request queues consumed by inference workers."""
 
-    def __init__(self, max_size: int = 32) -> None:
+    def __init__(self, max_size: int = 32, *, task_settings: tuple[Any, ...] = ()) -> None:
         self._max_size = max(int(max_size), 1)
         self._lock = Lock()
-        self._order: deque[tuple[str, str, int]] = deque()
+        self._order_by_task: dict[str, deque[tuple[str, str, int]]] = {}
         self._items: dict[tuple[str, str, int], TaskRequest] = {}
         self._dropped = 0
         self._dropped_by_task: dict[str, int] = {}
+        self._stale_dropped_by_task: dict[str, int] = {}
         self._replaced_by_task: dict[str, int] = {}
         self._submitted_by_task: dict[str, int] = {}
         self._queue_wait_ms_by_task: dict[str, deque[float]] = {}
+        self._queue_size_by_task = {
+            str(task.name): max(int(task.queue_size), 1)
+            for task in task_settings
+            if getattr(task, "queue_size", None) is not None
+        }
+        self._stale_after_ms_by_task = {
+            str(task.name): max(int(task.stale_after_ms), 1)
+            for task in task_settings
+            if getattr(task, "stale_after_ms", None) is not None
+        }
+        self._configured_task_names = {str(task.name) for task in task_settings}
 
     def submit(self, requests: tuple[TaskRequest, ...] | list[TaskRequest]) -> None:
         with self._lock:
@@ -240,41 +252,34 @@ class TaskRequestBuffer:
                     self._submitted_by_task.get(request.task_name, 0) + 1
                 )
                 key = (request.stream_id, request.task_name, request.track_id)
+                order = self._order_by_task.setdefault(request.task_name, deque())
                 if key in self._items:
                     self._items[key] = request
                     self._replaced_by_task[request.task_name] = (
                         self._replaced_by_task.get(request.task_name, 0) + 1
                     )
                     continue
-                while len(self._items) >= self._max_size:
-                    old_key = self._order.popleft()
+                queue_size = self._queue_size_by_task.get(request.task_name, self._max_size)
+                while len(order) >= queue_size:
+                    old_key = order.popleft()
                     if old_key in self._items:
                         del self._items[old_key]
                         self._dropped += 1
                         task_name = old_key[1]
                         self._dropped_by_task[task_name] = self._dropped_by_task.get(task_name, 0) + 1
                 self._items[key] = request
-                self._order.append(key)
+                order.append(key)
 
     def drain(self, limit: int | None = None, *, task_name: str | None = None) -> tuple[TaskRequest, ...]:
         with self._lock:
-            count = len(self._order) if limit is None else max(int(limit), 0)
+            count = len(self._items) if limit is None else max(int(limit), 0)
+            if task_name is not None:
+                return tuple(self._drain_task_locked(task_name, count))
             requests: list[TaskRequest] = []
-            scanned = 0
-            while self._order and len(requests) < count and scanned < len(self._order) + 1:
-                key = self._order.popleft()
-                request = self._items.pop(key, None)
-                scanned += 1
-                if request is None:
-                    continue
-                if task_name is not None and request.task_name != task_name:
-                    self._order.append(key)
-                    self._items[key] = request
-                    continue
-                self._queue_wait_ms_by_task.setdefault(request.task_name, deque(maxlen=2048)).append(
-                    max((time.monotonic() - request.submitted_at_monotonic) * 1000.0, 0.0)
-                )
-                requests.append(request)
+            for name in sorted(self._order_by_task):
+                requests.extend(self._drain_task_locked(name, count - len(requests)))
+                if len(requests) >= count:
+                    break
             return tuple(requests)
 
     def stats(self) -> dict[str, int]:
@@ -283,6 +288,8 @@ class TaskRequestBuffer:
             for request in self._items.values():
                 pending_by_task[request.task_name] = pending_by_task.get(request.task_name, 0) + 1
             return {
+                "mode": "per_task_latest",
+                "default_queue_size": self._max_size,
                 "pending": len(self._items),
                 "dropped": self._dropped,
                 "by_task": {
@@ -290,7 +297,10 @@ class TaskRequestBuffer:
                         "submitted": self._submitted_by_task.get(task_name, 0),
                         "replaced": self._replaced_by_task.get(task_name, 0),
                         "dropped": self._dropped_by_task.get(task_name, 0),
+                        "stale_dropped": self._stale_dropped_by_task.get(task_name, 0),
                         "pending": pending_by_task.get(task_name, 0),
+                        "queue_size": self._queue_size_by_task.get(task_name, self._max_size),
+                        "stale_after_ms": self._stale_after_ms_by_task.get(task_name),
                         "queue_wait_ms": sample_summary(
                             self._queue_wait_ms_by_task.get(task_name, ())
                         ),
@@ -299,8 +309,12 @@ class TaskRequestBuffer:
                         set(self._submitted_by_task)
                         | set(self._replaced_by_task)
                         | set(self._dropped_by_task)
+                        | set(self._stale_dropped_by_task)
                         | set(pending_by_task)
                         | set(self._queue_wait_ms_by_task)
+                        | set(self._queue_size_by_task)
+                        | set(self._stale_after_ms_by_task)
+                        | self._configured_task_names
                     )
                 },
             }
@@ -310,3 +324,25 @@ class TaskRequestBuffer:
             if task_name is None:
                 return bool(self._items)
             return any(item.task_name == task_name for item in self._items.values())
+
+    def _drain_task_locked(self, task_name: str, limit: int) -> list[TaskRequest]:
+        requests: list[TaskRequest] = []
+        order = self._order_by_task.get(task_name)
+        if order is None:
+            return requests
+        now = time.monotonic()
+        deadline_ms = self._stale_after_ms_by_task.get(task_name)
+        while order and len(requests) < limit:
+            key = order.popleft()
+            request = self._items.pop(key, None)
+            if request is None:
+                continue
+            wait_ms = max((now - request.submitted_at_monotonic) * 1000.0, 0.0)
+            if deadline_ms is not None and wait_ms > deadline_ms:
+                self._stale_dropped_by_task[task_name] = (
+                    self._stale_dropped_by_task.get(task_name, 0) + 1
+                )
+                continue
+            self._queue_wait_ms_by_task.setdefault(task_name, deque(maxlen=2048)).append(wait_ms)
+            requests.append(request)
+        return requests

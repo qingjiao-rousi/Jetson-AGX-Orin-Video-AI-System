@@ -52,7 +52,11 @@ def create_application(config_path: Path, settings=None) -> Application:
     capture_stream_ids = tuple(capture_ids)
     frame_store = FrameStore(
         capture_stream_ids=capture_stream_ids,
-        max_size=max(settings.optimization.max_queue_size * 4, 32),
+        max_size=(
+            settings.optimization.frame_store_max_size
+            or max(settings.optimization.max_queue_size * 4, 32)
+        ),
+        max_per_stream=settings.optimization.frame_store_per_stream_capacity,
     )
     pipeline_manager = PipelineManager(
         pipeline_builder,
@@ -92,7 +96,10 @@ def create_application(config_path: Path, settings=None) -> Application:
     fps_controller.bind_backpressure(backpressure_controller)
 
     routing_policy = RoutingPolicy(settings)
-    task_buffer = TaskRequestBuffer(settings.optimization.max_queue_size)
+    task_buffer = TaskRequestBuffer(
+        settings.optimization.max_queue_size,
+        task_settings=settings.model_tasks,
+    )
     runtime_metrics.set_queue_metrics_provider(
         lambda: {
             "writer": json_writer.stats(),

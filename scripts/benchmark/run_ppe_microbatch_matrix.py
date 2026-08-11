@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the PPE batch-1/4/8 micro-batch experiment on one fixed system config."""
+"""Run the PPE micro-batch experiment on one fixed system config."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def configure_ppe(base: dict[str, Any], batch_size: int, wait_ms: int) -> dict[s
     if not isinstance(helmet, dict):
         raise ValueError("base configuration must define models.helmet")
     if batch_size > 1:
-        helmet["engine"] = f"models/fp16/ppe_yolov8n_dynamic_fp16_b{batch_size}.engine"
+        helmet["engine"] = ppe_engine_for_batch(batch_size)
     tasks = config.setdefault("model_tasks", {})
     task = tasks.get("helmet")
     if not isinstance(task, dict):
@@ -65,6 +65,15 @@ def configure_ppe(base: dict[str, Any], batch_size: int, wait_ms: int) -> dict[s
     task["micro_batch_wait_ms"] = 0 if batch_size == 1 else wait_ms
     config.setdefault("app", {})["app_name"] = f"ppe-microbatch-{batch_size}"
     return config
+
+
+def ppe_engine_for_batch(batch_size: int) -> str:
+    """Return the smallest existing dynamic profile that can serve a batch."""
+    if batch_size <= 1:
+        return "models/fp16/ppe_yolov8n_dynamic_fp16.engine"
+    if batch_size <= 4:
+        return "models/fp16/ppe_yolov8n_dynamic_fp16_b4.engine"
+    return "models/fp16/ppe_yolov8n_dynamic_fp16_b8.engine"
 
 
 def numeric(payload: dict[str, Any], *keys: str) -> float | None:
@@ -109,6 +118,12 @@ def aggregate(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def event_consistency(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compare coarse helmet-alert coverage, not unrelated analytics events.
+
+    Tracker IDs and confirmation frames can vary between otherwise identical
+    end-of-stream runs, so a PPE micro-batch comparison uses
+    ``(stream_id, status)`` rather than exact track/frame signatures.
+    """
     by_key = {(int(run["batch_size"]), int(run["repetition"])): run for run in runs if run.get("summary")}
     comparisons: list[dict[str, Any]] = []
     for (batch_size, repetition), candidate in sorted(by_key.items()):
@@ -117,26 +132,36 @@ def event_consistency(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         baseline = by_key.get((1, repetition))
         if baseline is None:
             continue
-        left = {tuple(item) for item in baseline["summary"]["predictions"]["event_signatures"]}
-        right = {tuple(item) for item in candidate["summary"]["predictions"]["event_signatures"]}
+        left = helmet_event_keys(baseline["summary"])
+        right = helmet_event_keys(candidate["summary"])
         comparisons.append(
             {
                 "repetition": repetition,
                 "baseline_batch_size": 1,
                 "candidate_batch_size": batch_size,
-                "matched_events": len(left & right),
-                "batch1_only_events": len(left - right),
-                "candidate_only_events": len(right - left),
+                "event_type": "helmet_violation",
+                "matched_event_keys": len(left & right),
+                "batch1_only_event_keys": len(left - right),
+                "candidate_only_event_keys": len(right - left),
             }
         )
     return comparisons
 
 
+def helmet_event_keys(summary: dict[str, Any]) -> set[tuple[object, object]]:
+    signatures = summary.get("predictions", {}).get("event_signatures", ())
+    return {
+        (signature[1], signature[4])
+        for signature in signatures
+        if len(signature) >= 5 and signature[0] == "helmet_violation"
+    }
+
+
 def main() -> int:
     args = parse_args()
     batch_sizes = [int(value) for value in args.batch_sizes.split(",") if value.strip()]
-    if not batch_sizes or any(value not in {1, 4, 8} for value in batch_sizes):
-        raise SystemExit("--batch-sizes must be a non-empty subset of 1,4,8")
+    if not batch_sizes or any(value not in {1, 2, 4, 8} for value in batch_sizes):
+        raise SystemExit("--batch-sizes must be a non-empty subset of 1,2,4,8")
     if args.repetitions <= 0 or args.wait_ms < 0:
         raise SystemExit("--repetitions must be positive and --wait-ms must not be negative")
 
@@ -187,7 +212,7 @@ def main() -> int:
         "schema_version": 1,
         "run_id": run_id,
         "executed": args.execute,
-        "comparison": "PPE micro-batch 1 vs 4 vs 8; primary INT8 and other specialist engines unchanged",
+        "comparison": "PPE micro-batch sizes; primary INT8 and other specialist engines unchanged",
         "runs": runs,
         "aggregates": aggregate(runs) if args.execute else [],
         "event_consistency": event_consistency(runs) if args.execute else [],

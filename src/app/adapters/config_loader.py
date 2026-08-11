@@ -117,6 +117,16 @@ def load_settings(config_path: Path) -> AppSettings:
             enable_backpressure=bool(optimization_cfg.get("enable_backpressure", True)),
             enable_drop_old_frames=bool(optimization_cfg.get("enable_drop_old_frames", True)),
             stale_after_seconds=float(optimization_cfg.get("stale_after_seconds", 5.0)),
+            frame_store_max_size=(
+                int(optimization_cfg["frame_store_max_size"])
+                if optimization_cfg.get("frame_store_max_size") is not None
+                else None
+            ),
+            frame_store_per_stream_capacity=(
+                int(optimization_cfg["frame_store_per_stream_capacity"])
+                if optimization_cfg.get("frame_store_per_stream_capacity") is not None
+                else None
+            ),
         ),
         deepstream=DeepStreamSettings(
             batch_size=int(deepstream_cfg.get("batch_size", 6)),
@@ -250,6 +260,12 @@ def _parse_model_tasks(raw: Any) -> tuple[ModelTaskSettings, ...]:
                 frame_trigger=bool(options.get("frame_trigger", False)),
                 micro_batch_size=int(options.get("micro_batch_size", 1)),
                 micro_batch_wait_ms=int(options.get("micro_batch_wait_ms", 0)),
+                queue_size=int(options["queue_size"]) if options.get("queue_size") is not None else None,
+                stale_after_ms=(
+                    int(options["stale_after_ms"])
+                    if options.get("stale_after_ms") is not None
+                    else None
+                ),
                 enabled=bool(options.get("enabled", True)),
             )
         )
