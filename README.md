@@ -1,1 +1,0 @@
-# Jetson-agx-orin-32g-YOLO
