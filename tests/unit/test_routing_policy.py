@@ -98,6 +98,18 @@ class RoutingPolicyTests(unittest.TestCase):
         self.assertEqual(len(drained), 1)
         self.assertEqual(drained[0].track_id, 7)
 
+    def test_buffer_reports_per_task_replacements_and_drops(self) -> None:
+        policy = RoutingPolicy(self.settings)
+        buffer = TaskRequestBuffer(max_size=1)
+        helmet = policy.route(make_frame(0))
+        helmet = policy.route(make_frame(1))
+        helmet = policy.route(make_frame(2))
+        buffer.submit(helmet)
+        buffer.submit(helmet)
+        stats = buffer.stats()
+        self.assertEqual(stats["by_task"]["helmet"]["submitted"], 2)
+        self.assertEqual(stats["by_task"]["helmet"]["replaced"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -87,7 +87,7 @@ build_engine() {
 
 if [ "$BUILD_PRIMARY" = 1 ]; then
     # nvstreammux/primary-infer receives the 1, 4, and 8-stream batches.
-    build_engine models/yolov8s.onnx models/fp16/yolov8s.engine \
+    build_engine export_yolov8_ds/yolov8s.onnx models/fp16/yolov8s.engine \
         --memPoolSize=workspace:2048M \
         --minShapes=input:1x3x640x640 \
         --optShapes=input:8x3x640x640 \

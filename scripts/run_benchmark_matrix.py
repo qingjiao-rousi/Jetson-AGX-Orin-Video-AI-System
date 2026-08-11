@@ -35,6 +35,13 @@ def parse_args() -> argparse.Namespace:
         default=Path("configs/app/app_multifile_8_primary_int8.yaml"),
         help="Configuration where only the primary YOLO engine is INT8.",
     )
+    parser.add_argument(
+        "--primary-int8-engine",
+        type=Path,
+        help="Optional candidate primary INT8 engine path; does not modify the base YAML.",
+    )
+    parser.add_argument("--fp16-confidence-threshold", type=float, help="Primary FP16 pre-cluster threshold for every run.")
+    parser.add_argument("--int8-confidence-threshold", type=float, help="Primary INT8 pre-cluster threshold for every run.")
     parser.add_argument("--output-root", type=Path, default=Path("outputs/benchmarks"))
     parser.add_argument("--stream-counts", default="1,4,8")
     parser.add_argument("--sinks", default="fake,file")
@@ -79,6 +86,18 @@ def make_run_config(base: dict[str, Any], stream_count: int) -> dict[str, Any]:
     deepstream["tiler_rows"] = rows
     deepstream["tiler_columns"] = columns
     return config
+
+
+def override_primary_engine(config: dict[str, Any], engine_path: Path) -> dict[str, Any]:
+    """Return a copied config with the same candidate path in both primary fields."""
+    updated = json.loads(json.dumps(config))
+    models = updated.get("models")
+    if not isinstance(models, dict) or not isinstance(models.get("primary"), dict):
+        raise ValueError("INT8 configuration must define models.primary")
+    engine = str(engine_path)
+    models["primary"]["engine"] = engine
+    updated.setdefault("deepstream", {})["model_engine_path"] = engine
+    return updated
 
 
 def validate_primary_model_ab(fp16: dict[str, Any], primary_int8: dict[str, Any]) -> None:
@@ -176,18 +195,26 @@ def main() -> int:
         raise SystemExit(str(exc)) from exc
     if any(count <= 0 for count in stream_counts) or args.repetitions <= 0:
         raise SystemExit("stream counts and repetitions must be positive")
+    for value, name in ((args.fp16_confidence_threshold, "--fp16-confidence-threshold"), (args.int8_confidence_threshold, "--int8-confidence-threshold")):
+        if value is not None and not 0.0 <= value <= 1.0:
+            raise SystemExit(f"{name} must be between 0 and 1")
 
     fp16 = load_config(args.fp16_config)
     primary_int8 = load_config(args.primary_int8_config)
+    if args.primary_int8_engine is not None:
+        primary_int8 = override_primary_engine(primary_int8, args.primary_int8_engine)
     validate_primary_model_ab(fp16, primary_int8)
-    configs = {"primary_fp16": fp16, "primary_int8": primary_int8}
+    configs = {
+        "primary_fp16": (fp16, args.fp16_confidence_threshold),
+        "primary_int8": (primary_int8, args.int8_confidence_threshold),
+    }
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     root = (args.output_root if args.output_root.is_absolute() else PROJECT_ROOT / args.output_root) / run_id
     root.mkdir(parents=True, exist_ok=True)
     (root / "environment.json").write_text(json.dumps(environment_snapshot(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     runs: list[dict[str, Any]] = []
-    for precision, base in configs.items():
+    for precision, (base, confidence_threshold) in configs.items():
         for stream_count in stream_counts:
             generated = make_run_config(base, stream_count)
             for sink in sinks:
@@ -204,10 +231,13 @@ def main() -> int:
                         "repetition": repetition,
                         "output_dir": str(output_dir),
                         "config": str(config_path),
+                        "confidence_threshold": confidence_threshold,
                         "execute": args.execute,
                     }
                     if args.execute:
                         env = os.environ | {"OUTPUT_SINK": sink, "ENABLE_TEGRASTATS": "1", "RUN_SECONDS": str(args.run_seconds)}
+                        if confidence_threshold is not None:
+                            env["CONFIDENCE_THRESHOLD"] = str(confidence_threshold)
                         completed = subprocess.run(
                             ["scripts/run_multistream.sh", str(config_path), str(output_dir)],
                             cwd=PROJECT_ROOT,
@@ -228,6 +258,11 @@ def main() -> int:
         "run_id": run_id,
         "executed": args.execute,
         "comparison": "primary_yolo_fp16_vs_int8_with_auxiliary_models_fp16",
+        "primary_engines": {
+            "fp16": fp16["models"]["primary"]["engine"],
+            "int8": primary_int8["models"]["primary"]["engine"],
+        },
+        "confidence_thresholds": {"fp16": args.fp16_confidence_threshold, "int8": args.int8_confidence_threshold},
         "latency_definition": "primary_infer_sink_to_json_write_ms",
         "runs": runs,
         "aggregates": aggregate(runs) if args.execute else [],

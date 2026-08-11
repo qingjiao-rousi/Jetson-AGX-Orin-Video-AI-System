@@ -5,12 +5,12 @@
 ## 已验证能力
 
 - 8 路本地 MP4 输入，单 DeepStream Pipeline，`nvstreammux batch_size=8`。
-- file、fake 和 RTSP/RTMP sink 代码路径；8 路 MP4 INT8 完整输出已在 Jetson 实测。
+- file、fake 和 RTSP/RTMP sink 代码路径；8 路 MP4 主模型 FP16/INT8 完整输出已在 Jetson 实测。
 - C++ `NvDsBatchMeta` probe + Python fallback；结果输出为逐帧 JSONL 和事件 JSONL。
 - 安全帽、姿态、火焰烟雾、车牌检测与 OCR 由独立 TensorRT worker 按配置加载；当前主模型 A/B 基线中它们均保持 FP16、batch=1。
 - `tegrastats` 指标、队列状态、GPU/温度/RAM/功耗记录，以及 systemd/日志轮转模板。
 
-当前没有声称：真实摄像头长时间稳定性、模型 mAP/Recall、FP16 与 INT8 的公平对比，或任何未完成实验支持的 P95 延迟数值。
+当前没有声称：真实摄像头长时间稳定性，或真实业务域的标注质量。COCO val2017 已完成主模型 FP16/INT8 标注评测；性能结论仅适用于 [benchmark.md](docs/benchmark.md) 记录的 Jetson、输入视频、功耗模式与软件版本。
 
 ## 系统结构
 
@@ -59,17 +59,17 @@ scripts/build_custom_yolo_parser.sh
 
 脚本会打印上游源代码提交和 `.so` 的 SHA256，应将两者记录到实验记录中。若要固定上游版本，设置 `DEEPSTREAM_YOLO_REVISION=<commit-or-tag>` 后再执行。
 
-主模型 A/B 基准配置：[configs/app/app_multifile_8_primary_int8.yaml](configs/app/app_multifile_8_primary_int8.yaml)。它只将主 YOLO 替换为 INT8，安全帽、姿态、烟火、车牌检测和 OCR 继续使用 FP16。`app_multifile_8_int8.yaml` 保留为后续全辅助模型 INT8 的场景配置，不用于当前主模型对照。
+主模型 A/B 基准配置：[configs/app/app_multifile_8_primary_int8.yaml](configs/app/app_multifile_8_primary_int8.yaml)。它只将主 YOLO 替换为通过 COCO train504 校准的 INT8 候选，安全帽、姿态、烟火、车牌检测和 OCR 继续使用 FP16。旧 `yolov8s_int8.engine` 仅保留作历史量化质量对照；`app_multifile_8_int8.yaml` 是后续全辅助模型 INT8 的场景配置，不用于当前主模型对照。
 
 主模型 INT8 校准构建示例：
 
 ```bash
 python3 scripts/build_yolov8s_int8.py \
-  --onnx models/yolov8s.onnx \
-  --images calibration/yolov8s \
+  --onnx export_yolov8_ds/yolov8s.onnx \
+  --images calibration/coco_train504/images \
   --batch-size 8 \
-  --cache models/int8/yolov8s_int8_calibration.cache \
-  --engine models/int8/yolov8s_int8.engine
+  --cache models/int8/yolov8s_coco_train504_calibration.cache \
+  --engine models/int8/yolov8s_coco_train504.engine
 ```
 
 ## 运行 8 路主模型 INT8 MP4
@@ -77,17 +77,17 @@ python3 scripts/build_yolov8s_int8.py \
 输入配置使用仓库根目录下的 `video/1.mp4` 到 `video/8.mp4`。准备好本机 engine 和视频后：
 
 ```bash
-OUTPUT_SINK=file RUN_SECONDS=0 ENABLE_TEGRASTATS=1 \
+OUTPUT_SINK=file RUN_SECONDS=0 ENABLE_TEGRASTATS=1 CONFIDENCE_THRESHOLD=0.15 \
 scripts/run_multistream.sh \
   configs/app/app_multifile_8_primary_int8.yaml \
-  outputs/primary_int8_multifile_8streams
+  outputs/primary_int8_coco_train504_8streams
 ```
 
 输出目录包含 `output.mp4`、`results.jsonl`、`events.jsonl`、`runtime_metrics.jsonl` 和 `app.log`。
 
 ```bash
 python3 scripts/summarize_precision_run.py \
-  --run primary_int8=outputs/primary_int8_multifile_8streams \
+  --run primary_int8=outputs/primary_int8_coco_train504_8streams \
   --warmup-samples 5 \
   --output outputs/int8_summary.json
 ```
@@ -117,9 +117,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ## 实测记录
 
-已完成主 YOLO FP16/INT8 的 `1/4/8` 路、`fake/file`、每组 3 次重复的 36 组系统基线。性能实验口径、P50/P95 定义和完整结果见 [docs/benchmark.md](docs/benchmark.md)。该结果代表指定硬件、软件和输入视频下的系统行为，不能替代 mAP 或公平的模型精度对比。
+已完成主 YOLO FP16/INT8 的 `1/4/8` 路、`fake/file`、每组 3 次重复的 36 组系统基线，以及 COCO val2017 的完整标注质量评测。最新候选还完成了 8 路 `fake/file`、每组 3 次的系统复测：在对应 FP16 对照下，吞吐提高约 `7.5%/6.3%`、E2E P50 降低约 `13.0%/11.9%`，但 FrameStore 丢弃仍是独立瓶颈。性能口径和结果见 [docs/benchmark.md](docs/benchmark.md)；COCO FP16/INT8 质量差异与部署结论见 [docs/coco_fp16_int8_evaluation.md](docs/coco_fp16_int8_evaluation.md)。系统吞吐结果不能替代 mAP，反之亦然。
 
 ## 已知限制与路线
 
-- 已埋点主推理前探针至 JSON 成功写入的 P50/P95；下一步是主模型离线 FP16/INT8 输出对齐、真实 RTSP 长稳和故障注入。
+- 已埋点主推理前探针至 JSON 成功写入的 P50/P95；已完成 COCO val2017 的主模型质量对比。后续优先补真实业务标注帧、RTSP 长稳和故障注入。
 - 需要将 benchmark 配置、环境信息、engine SHA256 和质量结果作为脱敏实验记录保存。

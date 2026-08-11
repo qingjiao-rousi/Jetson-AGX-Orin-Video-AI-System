@@ -104,7 +104,11 @@ def create_application(config_path: Path, settings=None) -> Application:
         (model for model in settings.models if model.name == "helmet" and model.enabled),
         None,
     )
-    helmet_worker = HelmetTaskWorker(task_buffer, frame_store, helmet_model)
+    helmet_task = next(
+        (task for task in settings.model_tasks if task.name == "helmet" and task.enabled),
+        None,
+    )
+    helmet_worker = HelmetTaskWorker(task_buffer, frame_store, helmet_model, helmet_task)
     plate_models = {
         model.name: model
         for model in settings.models
@@ -121,6 +125,14 @@ def create_application(config_path: Path, settings=None) -> Application:
         None,
     )
     fire_smoke_worker = FireSmokeTaskWorker(task_buffer, frame_store, fire_smoke_model)
+    runtime_metrics.set_queue_metrics_provider(
+        lambda: {
+            "writer": json_writer.stats(),
+            "task_buffer": task_buffer.stats(),
+            "frame_store": frame_store.stats(),
+            "workers": {"helmet": helmet_worker.stats()},
+        }
+    )
 
     orchestrator = Orchestrator(
         settings=settings,

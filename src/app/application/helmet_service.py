@@ -6,6 +6,7 @@ import logging
 import ctypes
 import ctypes.util
 from threading import Event, Thread, current_thread
+import time
 from typing import Any, Protocol
 
 import cv2
@@ -504,33 +505,55 @@ class HelmetTaskProcessor:
         self.associator = HelmetAssociator()
 
     def process(self, request: TaskRequest, frame: np.ndarray) -> HelmetAssessment:
-        roi, roi_rect = crop_person_roi(frame, request.bbox)
-        model_image, _, _, _ = letterbox(roi, self.input_width, self.input_height)
-        tensor = cv2.cvtColor(model_image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
-        detections = decode_yolov8_output(
-            self.backend.infer(tensor),
-            roi_shape=roi.shape[:2],
-            input_width=self.input_width,
-            input_height=self.input_height,
-            labels=self.labels,
-        )
-        mapped = tuple(
-            HelmetDetection(
-                item.class_id,
-                item.class_name,
-                item.confidence,
-                map_roi_bbox(item.bbox, roi_rect),
+        return self.process_batch(((request, frame),))[0]
+
+    def process_batch(
+        self, tasks: tuple[tuple[TaskRequest, np.ndarray], ...]
+    ) -> tuple[HelmetAssessment, ...]:
+        """Run one TensorRT request for a non-empty batch of person ROIs."""
+        if not tasks:
+            return ()
+        prepared: list[tuple[TaskRequest, tuple[int, int], tuple[int, int, int, int], np.ndarray]] = []
+        for request, frame in tasks:
+            roi, roi_rect = crop_person_roi(frame, request.bbox)
+            model_image, _, _, _ = letterbox(roi, self.input_width, self.input_height)
+            tensor = cv2.cvtColor(model_image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            prepared.append((request, roi.shape[:2], roi_rect, np.transpose(tensor, (2, 0, 1))))
+
+        output = np.asarray(self.backend.infer(np.stack([item[3] for item in prepared], axis=0)))
+        if output.ndim < 3 or output.shape[0] != len(prepared):
+            raise RuntimeError(
+                f"PPE engine output batch {output.shape} does not match input batch {len(prepared)}"
             )
-            for item in detections
-        )
-        return self.associator.associate(
-            request.bbox,
-            mapped,
-            stream_id=request.stream_id,
-            track_id=request.track_id,
-            frame_id=request.frame_id,
-        )
+
+        assessments: list[HelmetAssessment] = []
+        for index, (request, roi_shape, roi_rect, _) in enumerate(prepared):
+            detections = decode_yolov8_output(
+                output[index : index + 1],
+                roi_shape=roi_shape,
+                input_width=self.input_width,
+                input_height=self.input_height,
+                labels=self.labels,
+            )
+            mapped = tuple(
+                HelmetDetection(
+                    item.class_id,
+                    item.class_name,
+                    item.confidence,
+                    map_roi_bbox(item.bbox, roi_rect),
+                )
+                for item in detections
+            )
+            assessments.append(
+                self.associator.associate(
+                    request.bbox,
+                    mapped,
+                    stream_id=request.stream_id,
+                    track_id=request.track_id,
+                    frame_id=request.frame_id,
+                )
+            )
+        return tuple(assessments)
 
 
 @dataclass
@@ -597,32 +620,72 @@ class HelmetTaskExecutor:
         self.processed = 0
         self.missing_frames = 0
         self.errors = 0
+        self.batch_sizes: list[int] = []
+        self.queue_wait_ms: list[float] = []
+        self.inference_ms: list[float] = []
+        self.task_latency_ms: list[float] = []
 
-    def process_pending(self, task_buffer: Any, frame_store: Any, *, limit: int = 4) -> tuple[HelmetEvent, ...]:
+    def process_requests(
+        self, requests: tuple[TaskRequest, ...], frame_store: Any
+    ) -> tuple[HelmetEvent, ...]:
         events: list[HelmetEvent] = []
-        for request in task_buffer.drain(limit, task_name="helmet"):
+        tasks: list[tuple[TaskRequest, np.ndarray]] = []
+        for request in requests:
             frame = frame_store.get_bgr(request.stream_id, request.frame_id)
             if frame is None:
                 self.missing_frames += 1
                 continue
-            try:
-                assessment = self.processor.process(request, frame)
-                self.processed += 1
-                event = self.event_tracker.update(assessment, request.bbox)
-                if event is not None:
-                    events.append(event)
-            except Exception:
-                self.errors += 1
+            tasks.append((request, frame))
+        if not tasks:
+            return ()
+        inference_started = time.monotonic()
+        self.queue_wait_ms.extend(
+            max((inference_started - request.submitted_at_monotonic) * 1000.0, 0.0)
+            for request, _ in tasks
+        )
+        try:
+            assessments = self.processor.process_batch(tuple(tasks))
+        except Exception:
+            self.errors += len(tasks)
+            logging.exception("helmet micro-batch failed: size=%s", len(tasks))
+            return ()
+        self.batch_sizes.append(len(tasks))
+        now = time.monotonic()
+        self.inference_ms.append((now - inference_started) * 1000.0)
+        self.task_latency_ms.extend(
+            max((now - request.submitted_at_monotonic) * 1000.0, 0.0)
+            for request, _ in tasks
+        )
+        for (request, _), assessment in zip(tasks, assessments):
+            self.processed += 1
+            event = self.event_tracker.update(assessment, request.bbox)
+            if event is not None:
+                events.append(event)
         return tuple(events)
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "processed": self.processed,
+            "missing_frames": self.missing_frames,
+            "errors": self.errors,
+            "batches": len(self.batch_sizes),
+            "batch_size": _sample_summary(self.batch_sizes),
+            "queue_wait_ms": _sample_summary(self.queue_wait_ms),
+            "inference_ms": _sample_summary(self.inference_ms),
+            "task_latency_ms": _sample_summary(self.task_latency_ms),
+        }
 
 
 class HelmetTaskWorker:
     """Lazy, dedicated worker for the configured PPE TensorRT engine."""
 
-    def __init__(self, task_buffer: Any, frame_store: Any, model_settings: Any | None) -> None:
+    def __init__(
+        self, task_buffer: Any, frame_store: Any, model_settings: Any | None, task_settings: Any | None = None
+    ) -> None:
         self.task_buffer = task_buffer
         self.frame_store = frame_store
         self.model_settings = model_settings
+        self.task_settings = task_settings
         self._event_handler = None
         self._stop_event = Event()
         self._thread: Thread | None = None
@@ -650,14 +713,15 @@ class HelmetTaskWorker:
 
     def stats(self) -> dict[str, Any]:
         executor = self._executor
+        executor_stats = executor.stats() if executor is not None else {}
         return {
             "running": self._thread is not None and self._thread.is_alive(),
             "initialized": executor is not None,
             "disabled": self._disabled,
             "init_error": self._init_error,
-            "processed": executor.processed if executor else 0,
-            "missing_frames": executor.missing_frames if executor else 0,
-            "errors": executor.errors if executor else 0,
+            "micro_batch_size": self._micro_batch_size(),
+            "micro_batch_wait_ms": self._micro_batch_wait_ms(),
+            **executor_stats,
         }
 
     def _run(self) -> None:
@@ -690,10 +754,53 @@ class HelmetTaskWorker:
                     self.task_buffer.drain(task_name="helmet")
                     self._disabled = True
                     return
-            events = self._executor.process_pending(self.task_buffer, self.frame_store)
+            requests = self._collect_requests()
+            events = self._executor.process_requests(requests, self.frame_store)
             if self._executor.processed > 0 and not self._logged_processing:
                 logging.info("helmet task processed successfully: count=%s", self._executor.processed)
                 self._logged_processing = True
             if self._event_handler is not None:
                 for event in events:
                     self._event_handler(event)
+
+    def _micro_batch_size(self) -> int:
+        return max(int(getattr(self.task_settings, "micro_batch_size", 1)), 1)
+
+    def _micro_batch_wait_ms(self) -> int:
+        return max(int(getattr(self.task_settings, "micro_batch_wait_ms", 0)), 0)
+
+    def _collect_requests(self) -> tuple[TaskRequest, ...]:
+        maximum = self._micro_batch_size()
+        requests = list(self.task_buffer.drain(maximum, task_name="helmet"))
+        if len(requests) >= maximum:
+            return tuple(requests)
+        deadline = time.monotonic() + self._micro_batch_wait_ms() / 1000.0
+        while len(requests) < maximum and not self._stop_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._stop_event.wait(min(remaining, 0.005))
+            requests.extend(self.task_buffer.drain(maximum - len(requests), task_name="helmet"))
+        return tuple(requests)
+
+
+def _sample_summary(values: list[float] | list[int]) -> dict[str, float | int | None]:
+    if not values:
+        return {"samples": 0, "average": None, "p50": None, "p95": None, "max": None}
+    ordered = sorted(float(value) for value in values)
+    return {
+        "samples": len(ordered),
+        "average": round(sum(ordered) / len(ordered), 3),
+        "p50": round(_percentile(ordered, 50), 3),
+        "p95": round(_percentile(ordered, 95), 3),
+        "max": round(ordered[-1], 3),
+    }
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if len(values) == 1:
+        return values[0]
+    position = (len(values) - 1) * percentile / 100.0
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    return values[lower] + (values[upper] - values[lower]) * (position - lower)

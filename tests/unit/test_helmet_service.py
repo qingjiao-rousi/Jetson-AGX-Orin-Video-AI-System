@@ -8,11 +8,13 @@ from app.application.helmet_service import (
     HelmetAssociator,
     HelmetDetection,
     HelmetEventTracker,
+    HelmetTaskProcessor,
     bbox_iom,
     crop_person_roi,
     decode_yolov8_output,
 )
 from app.domain.entities import BoundingBox
+from app.application.routing_policy import TaskRequest
 
 
 class HelmetServiceTests(unittest.TestCase):
@@ -64,11 +66,58 @@ class HelmetServiceTests(unittest.TestCase):
         self.assertEqual(event.event_type, "helmet_violation")
         self.assertIsNone(tracker.update(tracker_assessment(4, "not_wearing"), person))
 
+    def test_process_batch_preserves_request_order(self) -> None:
+        backend = BatchBackend()
+        processor = HelmetTaskProcessor(backend, ("barricade", "dumpster", "excavators", "gloves", "hardhat"))
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        requests = (
+            helmet_request(stream_id="stream-0", track_id=10, frame_id=20),
+            helmet_request(stream_id="stream-1", track_id=11, frame_id=21),
+        )
+
+        assessments = processor.process_batch(tuple((request, frame) for request in requests))
+
+        self.assertEqual(backend.last_shape, (2, 3, 640, 640))
+        self.assertEqual([(item.stream_id, item.track_id, item.frame_id) for item in assessments], [
+            ("stream-0", 10, 20),
+            ("stream-1", 11, 21),
+        ])
+        self.assertEqual([item.status for item in assessments], ["wearing", "wearing"])
+
 
 def tracker_assessment(frame_id: int, status: str):
     from app.application.helmet_service import HelmetAssessment
 
     return HelmetAssessment("stream-0", 3, frame_id, status, 0.9)
+
+
+class BatchBackend:
+    def __init__(self) -> None:
+        self.last_shape = None
+
+    def infer(self, tensor: np.ndarray) -> np.ndarray:
+        self.last_shape = tuple(tensor.shape)
+        output = np.zeros((tensor.shape[0], 21, 1), dtype=np.float32)
+        output[:, 0:4, 0] = [100, 80, 100, 80]
+        output[:, 8, 0] = 0.91
+        return output
+
+
+def helmet_request(*, stream_id: str, track_id: int, frame_id: int) -> TaskRequest:
+    return TaskRequest(
+        task_name="helmet",
+        model_name="helmet",
+        stream_id=stream_id,
+        source_name=stream_id,
+        scene="production",
+        capability="helmet_compliance",
+        frame_id=frame_id,
+        track_id=track_id,
+        class_name="person",
+        confidence=0.9,
+        bbox=BoundingBox(100, 100, 200, 300),
+        priority="high",
+    )
 
 
 if __name__ == "__main__":

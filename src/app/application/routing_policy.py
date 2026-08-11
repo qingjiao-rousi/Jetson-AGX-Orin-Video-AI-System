@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Lock
+import time
 from typing import Any
 
 from app.domain.entities import BoundingBox, FrameResult, Track, canonical_stream_id
@@ -29,6 +30,7 @@ class TaskRequest:
     bbox: BoundingBox
     priority: str
     zones: tuple[str, ...] = ()
+    submitted_at_monotonic: float = field(default_factory=time.monotonic, compare=False)
 
 
 @dataclass
@@ -143,7 +145,7 @@ class RoutingPolicy:
             self._submitted += 1
             return True
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "submitted": self._submitted,
@@ -224,19 +226,30 @@ class TaskRequestBuffer:
         self._order: deque[tuple[str, str, int]] = deque()
         self._items: dict[tuple[str, str, int], TaskRequest] = {}
         self._dropped = 0
+        self._dropped_by_task: dict[str, int] = {}
+        self._replaced_by_task: dict[str, int] = {}
+        self._submitted_by_task: dict[str, int] = {}
 
     def submit(self, requests: tuple[TaskRequest, ...] | list[TaskRequest]) -> None:
         with self._lock:
             for request in requests:
+                self._submitted_by_task[request.task_name] = (
+                    self._submitted_by_task.get(request.task_name, 0) + 1
+                )
                 key = (request.stream_id, request.task_name, request.track_id)
                 if key in self._items:
                     self._items[key] = request
+                    self._replaced_by_task[request.task_name] = (
+                        self._replaced_by_task.get(request.task_name, 0) + 1
+                    )
                     continue
                 while len(self._items) >= self._max_size:
                     old_key = self._order.popleft()
                     if old_key in self._items:
                         del self._items[old_key]
                         self._dropped += 1
+                        task_name = old_key[1]
+                        self._dropped_by_task[task_name] = self._dropped_by_task.get(task_name, 0) + 1
                 self._items[key] = request
                 self._order.append(key)
 
@@ -260,7 +273,27 @@ class TaskRequestBuffer:
 
     def stats(self) -> dict[str, int]:
         with self._lock:
-            return {"pending": len(self._items), "dropped": self._dropped}
+            pending_by_task: dict[str, int] = {}
+            for request in self._items.values():
+                pending_by_task[request.task_name] = pending_by_task.get(request.task_name, 0) + 1
+            return {
+                "pending": len(self._items),
+                "dropped": self._dropped,
+                "by_task": {
+                    task_name: {
+                        "submitted": self._submitted_by_task.get(task_name, 0),
+                        "replaced": self._replaced_by_task.get(task_name, 0),
+                        "dropped": self._dropped_by_task.get(task_name, 0),
+                        "pending": pending_by_task.get(task_name, 0),
+                    }
+                    for task_name in sorted(
+                        set(self._submitted_by_task)
+                        | set(self._replaced_by_task)
+                        | set(self._dropped_by_task)
+                        | set(pending_by_task)
+                    )
+                },
+            }
 
     def has_pending(self, task_name: str | None = None) -> bool:
         with self._lock:

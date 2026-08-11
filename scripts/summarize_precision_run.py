@@ -58,6 +58,17 @@ def nested_value(payload: dict[str, Any], *keys: str, default=None):
     return default if value is None else value
 
 
+def event_signature(event: dict[str, Any]) -> tuple[object, ...]:
+    """Stable event identity for cross-run consistency checks."""
+    return (
+        event.get("event_type"),
+        event.get("stream_id"),
+        event.get("track_id"),
+        event.get("frame_id"),
+        event.get("status"),
+    )
+
+
 def summarize(name: str, output_dir: Path, warmup_samples: int) -> dict[str, Any]:
     metrics = read_jsonl(output_dir / "runtime_metrics.jsonl")
     results = read_jsonl(output_dir / "results.jsonl")
@@ -84,6 +95,7 @@ def summarize(name: str, output_dir: Path, warmup_samples: int) -> dict[str, Any
             detection_frames[stream_id] += 1
 
     event_counts = Counter(str(row.get("event_type", "unknown")) for row in events)
+    event_signatures = sorted(event_signature(row) for row in events)
     stream_metrics = last.get("streams", {}) if isinstance(last, dict) else {}
     streams: dict[str, Any] = {}
     stream_ids = set(stream_metrics) | set(result_frames)
@@ -140,12 +152,15 @@ def summarize(name: str, output_dir: Path, warmup_samples: int) -> dict[str, Any
             "fps_controller_dropped": nested_value(controls, "fps", "dropped_frames", default=0),
             "fps_controller_drop_ratio": nested_value(controls, "fps", "drop_ratio", default=0.0),
             "backpressure_max_pending": nested_value(controls, "backpressure", "max_pending_ever", default=0),
+            "task_buffer_by_task": nested_value(queues, "task_buffer", "by_task", default={}),
+            "helmet_worker": nested_value(queues, "workers", "helmet", default={}),
         },
         "predictions": {
             "result_rows": len(results),
             "total_detections": sum(detection_totals.values()),
             "total_tracks": sum(track_totals.values()),
             "event_counts": dict(sorted(event_counts.items())),
+            "event_signatures": [list(signature) for signature in event_signatures],
         },
         "streams": streams,
         "ground_truth_metrics": {

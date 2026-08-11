@@ -92,6 +92,8 @@ class ModelTaskSettings:
     min_track_frames: int = 1
     cache_frames: int = 0
     frame_trigger: bool = False
+    micro_batch_size: int = 1
+    micro_batch_wait_ms: int = 0
     enabled: bool = True
 
 
@@ -235,6 +237,10 @@ class AppSettings:
                 raise ValueError(f"model task `{task.name}` min_track_frames must be greater than zero")
             if task.cache_frames < 0:
                 raise ValueError(f"model task `{task.name}` cache_frames must be zero or greater")
+            if task.micro_batch_size <= 0:
+                raise ValueError(f"model task `{task.name}` micro_batch_size must be greater than zero")
+            if task.micro_batch_wait_ms < 0:
+                raise ValueError(f"model task `{task.name}` micro_batch_wait_ms must not be negative")
         for model in self.models:
             if model.input_width <= 0 or model.input_height <= 0:
                 raise ValueError(f"model `{model.name}` input size must be greater than zero")

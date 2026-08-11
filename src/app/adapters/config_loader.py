@@ -248,6 +248,8 @@ def _parse_model_tasks(raw: Any) -> tuple[ModelTaskSettings, ...]:
                 min_track_frames=int(options.get("min_track_frames", 1)),
                 cache_frames=int(options.get("cache_frames", 0)),
                 frame_trigger=bool(options.get("frame_trigger", False)),
+                micro_batch_size=int(options.get("micro_batch_size", 1)),
+                micro_batch_wait_ms=int(options.get("micro_batch_wait_ms", 0)),
                 enabled=bool(options.get("enabled", True)),
             )
         )

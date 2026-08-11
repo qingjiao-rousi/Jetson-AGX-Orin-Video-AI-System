@@ -7,12 +7,13 @@ Prepare the following local assets before running the full pipeline:
 
 | Asset | Expected local path | Notes |
 | --- | --- | --- |
-| Primary YOLO ONNX | `models/yolov8s.onnx` | Source for FP16 and INT8 engine builds. |
+| Primary YOLO ONNX | `export_yolov8_ds/yolov8s.onnx` | Source for the current primary INT8 engine build; its output is `[batch,8400,6]`. |
 | Primary FP16 engine | `models/fp16/yolov8s.engine` | Build with `scripts/build_fp16_engines_trt107.sh --primary-only`. |
-| Primary INT8 engine | `models/int8/yolov8s_int8.engine` | Build with `scripts/build_yolov8s_int8.py`. |
+| Primary INT8 candidate engine | `models/int8/yolov8s_coco_train504.engine` | Current validated candidate; build with `scripts/build_yolov8s_int8.py` and the independent COCO train504 calibration set. |
 | Specialist FP16 engines | `models/fp16/` | Build with `scripts/build_fp16_engines_trt107.sh --specialists-only`. |
-| Calibration images | `calibration/yolov8s/` | Representative images for primary INT8 calibration. |
+| Candidate calibration images | `calibration/coco_train504/images/` | Independent COCO train2017 calibration set used by the current INT8 candidate. |
 | Local videos | `video/1.mp4` through `video/8.mp4` | Required by the bundled multi-file examples. |
+| COCO val2017 (optional) | `datasets/coco/` | Public, local-only labeled evaluation data; see `docs/coco_fp16_int8_evaluation.md`. |
 
 TensorRT engines are specific to the target Jetson software and hardware
 environment. Build them on the deployment device after confirming the model
