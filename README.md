@@ -10,8 +10,6 @@
 - 安全帽、姿态、火焰烟雾、车牌检测与 OCR 由独立 TensorRT worker 按配置加载；当前主模型 A/B 基线中它们均保持 FP16、batch=1。
 - `tegrastats` 指标、队列状态、GPU/温度/RAM/功耗记录，以及 systemd/日志轮转模板。
 
-当前没有声称：真实摄像头长时间稳定性，或真实业务域的标注质量。COCO val2017 已完成主模型 FP16/INT8 标注评测；性能结论仅适用于 [benchmark.md](docs/benchmark.md) 记录的 Jetson、输入视频、功耗模式与软件版本。
-
 ## 系统结构
 
 ```text
@@ -117,9 +115,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 ## 实测记录
 
-已完成主 YOLO FP16/INT8 的 `1/4/8` 路、`fake/file`、每组 3 次重复的 36 组系统基线，以及 COCO val2017 的完整标注质量评测。最新候选还完成了 8 路 `fake/file`、每组 3 次的系统复测：在对应 FP16 对照下，吞吐提高约 `7.5%/6.3%`、E2E P50 降低约 `13.0%/11.9%`，但 FrameStore 丢弃仍是独立瓶颈。性能口径和结果见 [docs/benchmark.md](docs/benchmark.md)；COCO FP16/INT8 质量差异与部署结论见 [docs/coco_fp16_int8_evaluation.md](docs/coco_fp16_int8_evaluation.md)。系统吞吐结果不能替代 mAP，反之亦然。
+已完成主 YOLO FP16/INT8 的 `1/4/8` 路、`fake/file`、每组 3 次重复的 36 组系统基线。最新候选还完成了 8 路 `fake/file`、每组 3 次的系统复测：在对应 FP16 对照下，吞吐提高约 `7.5%/6.3%`、E2E P50 降低约 `13.0%/11.9%`。性能口径和结果见 [docs/benchmark.md](docs/benchmark.md)； FP16/INT8 质量差异与部署结论见 [docs/coco_fp16_int8_evaluation.md](docs/coco_fp16_int8_evaluation.md)。系统吞吐结果不能替代 mAP，反之亦然。
 
 ## 已知限制与路线
 
-- 已埋点主推理前探针至 JSON 成功写入的 P50/P95；已完成 COCO val2017 的主模型质量对比。后续优先补真实业务标注帧、RTSP 长稳和故障注入。
+- 已埋点主推理前探针至 JSON 成功写入的 P50/P95；已完成 校准集 的主模型质量对比。后续优先补真实业务标注帧、RTSP 长稳和故障注入。
 - 需要将 benchmark 配置、环境信息、engine SHA256 和质量结果作为脱敏实验记录保存。
