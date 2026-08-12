@@ -6,7 +6,7 @@ repository root so relative model and configuration paths resolve consistently.
 | Directory | Purpose | Primary entry points |
 | --- | --- | --- |
 | `deploy/` | Jetson environment, parser and engine builds, application launch, systemd installation | `env.sh`, `check_env.sh`, `build_fp16_engines.sh`, `build_primary_detector_int8.py`, `run_multistream.sh` |
-| `benchmark/` | Repeatable system and PPE micro-batch benchmarks | `run_benchmark_matrix.py`, `run_ppe_microbatch_matrix.py`, `summarize_precision_run.py` |
+| `benchmark/` | Repeatable system, PPE micro-batch, FrameStore and profiling workflows | `run_benchmark_matrix.py`, `run_ppe_microbatch_matrix.py`, `run_frame_store_capacity_matrix.py`, `profile_primary_tensorrt.sh`, `profile_pipeline_nsys.sh` |
 | `evaluation/` | Offline FP16/INT8 output comparison, COCO evaluation and calibration manifests | `align_primary_detector_outputs.py`, `evaluate_primary_detector_coco.py`, `prepare_coco_train_calibration.py` |
 | `rtsp/` | Local RTSP simulation, RTSP pipeline runs, recovery checks and acceptance flows | `simulate_cameras.sh`, `run_rtsp_inproc.sh`, `run_rtsp_acceptance.sh` |
 | `tools/` | Optional local utilities, including ONNX export, Q/DQ experiments and the preview server | `export_pt_to_onnx.py`, `quantize_yolov8s_qdq.py`, `preview_web.py` |

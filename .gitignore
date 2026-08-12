@@ -70,6 +70,8 @@ logs/
 *.log
 *.jsonl
 *.csv
+*.nsys-rep
+*.sqlite
 .runtime/
 tmp/
 *.pid
