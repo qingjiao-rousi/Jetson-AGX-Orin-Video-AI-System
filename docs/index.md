@@ -2,6 +2,7 @@
 
 - [Benchmark methodology and results](benchmark.md)
 - [System architecture](architecture.md)
+- [Public architecture diagram](assets/architecture.svg)
 - [PPE micro-batch experiment](ppe_microbatch.md)
 - [TensorRT and Nsight profiling procedure](profiling.md)
 - [Primary FP16/INT8 offline detector alignment](primary_fp16_int8_alignment.md)

@@ -12,13 +12,10 @@
 
 ## 系统结构
 
-```text
-MP4 / RTSP
-   -> hardware decode -> nvstreammux(batch=1/4/8) -> primary YOLO (FP16/INT8) -> tracker
-   -> C++ metadata probe -> Python FrameResult
-   -> capability routing -> bounded TensorRT workers -> JSONL events
-   -> OSD -> hardware H.264 encoder -> MP4 / RTMP / RTSP
-```
+![Jetson DeepStream 多路分析架构](docs/assets/architecture.svg)
+
+主检测保持在一个 DeepStream Pipeline 中；C++ probe 只提取 metadata，专用 TensorRT
+任务经 Python 有界 worker 异步执行，避免在 GStreamer probe 回调内阻塞推理。
 
 关键代码边界：
 
@@ -121,3 +118,16 @@ PYTHONPATH=src python3 -m unittest discover -s tests/unit -p 'test_*.py' -v
 
 - 已埋点主推理前探针至 JSON 成功写入的 P50/P95；已完成 校准集 的主模型质量对比。后续优先补真实业务标注帧、RTSP 长稳和故障注入。
 - 需要将 benchmark 配置、环境信息、engine SHA256 和质量结果作为脱敏实验记录保存。
+
+## 许可证与第三方组件
+
+本仓库中由项目作者原创的源代码、配置、文档和架构图采用
+[Apache-2.0](LICENSE) 许可证。该授权**不覆盖** NVIDIA JetPack/CUDA/TensorRT/DeepStream、
+DeepStream-Yolo、Ultralytics YOLO、COCO、MediaMTX、FFmpeg，或任何模型权重、ONNX、
+TensorRT engine、数据集、视频与生成输出。
+
+运行或再分发前，请分别确认上游组件和模型/数据资产的许可与使用条件。
+`export_yolov8_ds/export_yoloV8.py` 是 DeepStream-Yolo commit
+`93aedb656a47b141ecbea99c407b002262287cfe` 的派生文件，不适用本仓库的 Apache-2.0；
+其 MIT 许可证及本地差异记录见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和
+[LICENSES/DeepStream-Yolo-93aedb656a47b141ecbea99c407b002262287cfe.txt](LICENSES/DeepStream-Yolo-93aedb656a47b141ecbea99c407b002262287cfe.txt)。

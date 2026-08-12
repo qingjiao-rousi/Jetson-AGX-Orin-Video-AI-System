@@ -1,3 +1,13 @@
+# Copyright (c) 2018-2023, Marcos Luciano Piropo Santos.
+# Copyright (c) 2018-2023, NVIDIA CORPORATION. All rights reserved.
+# SPDX-License-Identifier: MIT
+# Derived from utils/export_yoloV8.py in marcoslucianops/DeepStream-Yolo.
+# Upstream source: https://github.com/marcoslucianops/DeepStream-Yolo
+# Upstream revision: 93aedb656a47b141ecbea99c407b002262287cfe
+# Local modification: changed only the --weights help text.
+# Full upstream license: LICENSES/DeepStream-Yolo-93aedb656a47b141ecbea99c407b002262287cfe.txt
+# This file is not covered by this repository's Apache-2.0 license.
+
 import os
 import sys
 import onnx
@@ -122,7 +132,7 @@ def main(args):
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="DeepStream YOLOv8 conversion")
-    parser.add_argument("-w", "--weights", required=True, type=str, help="Input weights (.pt) file path (required)")
+    parser.add_argument("-w", "--weights", required=True, type=str, help="Input weights (.pt) file (required)")
     parser.add_argument("-s", "--size", nargs="+", type=int, default=[640], help="Inference size [H,W] (default [640])")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version")
     parser.add_argument("--simplify", action="store_true", help="ONNX simplify model")

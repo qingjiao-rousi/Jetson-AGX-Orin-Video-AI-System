@@ -58,7 +58,7 @@ python3 scripts/evaluation/align_primary_detector_outputs.py \
 
 2026-08-11 的初版对齐结果无效，已撤回：初版错误地将主模型输出按 PPE 的
 `[4 + classes, anchors]` 格式解析。实际 engine 输出由
-`export_yolov8_ds/export_yoloV8.py` 的 `DeepStreamOutput` 定义，为
+`export_yolov8_ds/export_yoloV8.py`（派生自上游 DeepStream-Yolo）的输出契约，为
 `[x1, y1, x2, y2, score, class_id]`，shape 为 `[batch, 8400, 6]`，且未做 NMS。
 FP16 与 INT8 engine 已在 Jetson 上实际确认这一 shape。
 

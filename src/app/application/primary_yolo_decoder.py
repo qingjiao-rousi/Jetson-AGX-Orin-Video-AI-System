@@ -1,6 +1,6 @@
 """Decoder for the project's exported primary YOLOv8 TensorRT output.
 
-``export_yolov8_ds/export_yoloV8.py`` appends ``DeepStreamOutput`` to the
+``export_yolov8_ds/export_yoloV8.py`` (derived from upstream DeepStream-Yolo) appends ``DeepStreamOutput`` to the
 Ultralytics model.  Its exact output contract is ``[x1, y1, x2, y2, score,
 class_id]`` with shape ``[batch, anchors, 6]``.  It has reduced classes but
 has not applied NMS.

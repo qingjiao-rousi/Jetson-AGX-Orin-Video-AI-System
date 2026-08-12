@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="720" viewBox="0 0 1440 720" role="img" aria-labelledby="title desc">
+  <title id="title">Jetson DeepStream multi-stream analytics architecture</title>
+  <desc id="desc">Input streams enter a DeepStream primary pipeline, metadata is parsed in C++ and routed by Python workers, while video, events, and metrics are emitted separately.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f9fc; } .title { font: 700 28px Arial, sans-serif; fill: #172033; }
+      .subtitle { font: 16px Arial, sans-serif; fill: #526078; } .label { font: 700 16px Arial, sans-serif; fill: #172033; }
+      .small { font: 14px Arial, sans-serif; fill: #40506b; } .box { stroke: #2c3e5d; stroke-width: 2; rx: 8; }
+      .input { fill: #e5f4ed; } .pipeline { fill: #e8efff; } .bridge { fill: #fff1d6; } .worker { fill: #fbe7ed; }
+      .output { fill: #e7f4f7; } .metrics { fill: #f1ecfb; } .arrow { stroke: #40506b; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .dashed { stroke-dasharray: 7 6; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><path d="M0,0 L10,3.5 L0,7 Z" fill="#40506b"/></marker>
+  </defs>
+  <rect class="bg" width="1440" height="720"/>
+  <text class="title" x="60" y="55">Jetson DeepStream Multi-Stream Analytics</text>
+  <text class="subtitle" x="60" y="84">One DeepStream primary pipeline; scenario-specific TensorRT inference runs outside the probe callback.</text>
+
+  <rect class="box input" x="60" y="165" width="180" height="105"/><text class="label" x="90" y="202">MP4 / RTSP</text><text class="small" x="90" y="228">1 / 4 / 8 streams</text><text class="small" x="90" y="250">local or live input</text>
+  <rect class="box pipeline" x="305" y="135" width="250" height="165"/><text class="label" x="338" y="173">DeepStream primary path</text><text class="small" x="338" y="202">NVDEC -&gt; nvstreammux</text><text class="small" x="338" y="226">YOLO FP16 / INT8</text><text class="small" x="338" y="250">tracker -&gt; OSD</text><text class="small" x="338" y="274">hardware H.264 encoder</text>
+  <rect class="box bridge" x="630" y="165" width="195" height="105"/><text class="label" x="657" y="202">Metadata bridge</text><text class="small" x="657" y="228">C++ NvDsBatchMeta</text><text class="small" x="657" y="250">Python FrameResult</text>
+  <rect class="box worker" x="900" y="135" width="235" height="165"/><text class="label" x="935" y="173">Application workers</text><text class="small" x="935" y="202">capability routing</text><text class="small" x="935" y="226">bounded queues / FrameStore</text><text class="small" x="935" y="250">PPE / pose / fire / plate</text><text class="small" x="935" y="274">TensorRT specialist engines</text>
+  <rect class="box output" x="1200" y="112" width="175" height="88"/><text class="label" x="1229" y="148">Video output</text><text class="small" x="1229" y="174">MP4 / RTMP / RTSP</text>
+  <rect class="box output" x="1200" y="245" width="175" height="88"/><text class="label" x="1228" y="281">Events</text><text class="small" x="1228" y="307">JSONL</text>
+  <rect class="box metrics" x="900" y="435" width="235" height="105"/><text class="label" x="931" y="472">Observability</text><text class="small" x="931" y="498">runtime metrics / tegrastats</text><text class="small" x="931" y="520">queue and worker state</text>
+  <rect class="box metrics" x="1200" y="435" width="175" height="105"/><text class="label" x="1228" y="472">Operations</text><text class="small" x="1228" y="498">systemd / logrotate</text><text class="small" x="1228" y="520">dashboard</text>
+  <path class="arrow" d="M240 218 H305"/><path class="arrow" d="M555 218 H630"/><path class="arrow" d="M825 218 H900"/>
+  <path class="arrow" d="M555 155 C760 55,1080 60,1200 145"/><path class="arrow" d="M1135 245 H1200"/>
+  <path class="arrow dashed" d="M1018 300 V435"/><path class="arrow" d="M1135 487 H1200"/>
+  <text class="small" x="600" y="625">Solid arrows: frame or event flow. Dashed arrow: runtime observation flow. Model artifacts and media are local-only and are not distributed by this repository.</text>
+</svg>
