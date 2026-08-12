@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""DeepStream pipeline 的声明、实例化、动态连接与 probe 回调实现。"""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -7,7 +9,9 @@ import logging
 from threading import Lock
 import time
 
+# stream-N 规范必须与 metadata、FrameStore 和 RoutingPolicy 保持一致。
 from app.domain.entities import canonical_stream_id
+# SourceFactory 只描述各输入支路；CppProbeHandler 是 metadata 解析的可选原生快路径。
 from app.infrastructure.pipeline.source_factory import SourceBranchSpec, SourceFactory, SourceSpec
 from app.infrastructure.pipeline.cpp_probe import CppProbeHandler
 
@@ -17,6 +21,7 @@ OSD_CONFIDENCE_UPDATE_THRESHOLD = 0.05
 
 @dataclass(frozen=True)
 class PipelineNodeSpec:
+    """元素图中的一个节点声明，便于在没有 GStreamer 的单测环境检查拓扑。"""
     name: str
     element: str
     stage: str
@@ -26,6 +31,7 @@ class PipelineNodeSpec:
 
 @dataclass(frozen=True)
 class PipelineBlueprint:
+    """不依赖硬件运行时的 pipeline 蓝图，是配置校验和运行时组装之间的边界。"""
     app_name: str
     source_count: int
     sources: tuple[SourceSpec, ...]
@@ -38,7 +44,9 @@ class PipelineBlueprint:
 
 
 class GStreamerRuntimeFactory:
+    """延迟加载 Gst/pyds，并将 Blueprint 元素声明实际实例化。"""
     def __init__(self) -> None:
+        # 延迟导入保证无 Jetson/GStreamer 的 CI 仍可验证 blueprint 与配置逻辑。
         self._gst = None
         self._available = False
         self._pyds = None
@@ -50,16 +58,19 @@ class GStreamerRuntimeFactory:
         return self._available
 
     def create_elements(self, blueprint: PipelineBlueprint) -> dict[str, Any]:
+        """逐一创建元素并设置已被当前插件版本支持的属性。"""
         if not self._available or self._gst is None:
             return {}
 
         elements: dict[str, Any] = {}
+        # Blueprint 里的 root 占位符对应 Gst.Pipeline 本身，不能再通过 ElementFactory 创建。
         for node in blueprint.nodes:
             if node.element == "gst_pipeline":
                 continue
             element = self._gst.ElementFactory.make(node.element, node.name)
             if element is None:
                 raise RuntimeError(f"failed to create GStreamer element `{node.element}` as `{node.name}`")
+            # caps 由字符串转 Gst.Caps；其它属性先检查插件版本是否支持再设置。
             for key, value in node.properties.items():
                 if node.element == "capsfilter" and key == "caps" and isinstance(value, str):
                     value = self._gst.Caps.from_string(value)
@@ -86,6 +97,7 @@ class GStreamerRuntimeFactory:
         return self._pyds
 
     def _load(self) -> None:
+        """GStreamer 缺失时保留可测试的 Blueprint 模式，不让导入阶段直接失败。"""
         try:
             import gi
 
@@ -101,6 +113,7 @@ class GStreamerRuntimeFactory:
             self._available = False
 
     def _load_pyds(self) -> None:
+        """pyds 仅在 probe metadata/FrameStore 路径需要；缺失时保留可测试的非硬件模式。"""
         try:
             import pyds  # type: ignore
 
@@ -121,7 +134,14 @@ class GStreamerRuntimeFactory:
 
 
 class PipelineBuilder:
+    """构建单一 DeepStream 主 pipeline。
+
+    两阶段设计：:meth:`build` 只生成可审计的蓝图；:meth:`build_runtime` 才创建
+    GStreamer 对象、静态/动态 pad 链接和 request pad。probe 回调是 metadata、
+    FrameStore 与端到端时延进入 Python 应用层的唯一入口。
+    """
     def __init__(self, settings) -> None:
+        # 这里仅保存运行期状态：OSD/车牌注释和本地 track ID 映射都不进入 YAML 配置。
         self.settings = settings
         self._runtime_factory = GStreamerRuntimeFactory()
         self._probe_warning_counts: dict[str, int] = {}
@@ -143,15 +163,18 @@ class PipelineBuilder:
             "osd_objects": 0,
             "osd_updates": 0,
         }
+        # 原生 parser 可选；无法加载或调用失败时 probe 自动退回 Python 遍历。
         self._cpp_probe = CppProbeHandler(
             getattr(self.settings.deepstream, "probe_handler_path", None)
         )
 
     def register_plate_annotation(self, stream_id: str, track_id: int, event: dict[str, Any]) -> None:
+        """缓存 OCR 结果，供后续经过 OSD 的同一 track 绘制车牌文字。"""
         try:
             source_id = int(str(stream_id).rsplit("-", 1)[-1])
         except (TypeError, ValueError):
             return
+        # OCR worker 与 GStreamer probe 并发访问此表，锁只保护短暂的字典复制。
         with self._plate_annotations_lock:
             self._plate_annotations[(source_id, int(track_id))] = dict(event)
 
@@ -160,8 +183,10 @@ class PipelineBuilder:
             return self._plate_annotations.get((source_id, local_track_id))
 
     def build(self) -> PipelineBlueprint:
+        """校验设置并生成纯声明式拓扑，不访问 GPU、GStreamer element 或视频输入。"""
         self.settings.validate()
 
+        # 先生成 source branches，启用 source 的顺序决定 streammux sink_N / stream-N。
         source_factory = SourceFactory(getattr(self.settings, "sources", ()))
         sources = tuple(source_factory.list_sources())
         branches = source_factory.build_branches()
@@ -171,6 +196,7 @@ class PipelineBuilder:
         self._validate_deepstream_paths()
         self._validate_output_policy()
 
+        # 节点、静态边、probe 与策略均可在无硬件环境检查，因此先汇总为不可变蓝图。
         nodes = self._build_nodes(branches)
         links = self._build_links(branches)
         probes = self._build_probes()
@@ -189,7 +215,13 @@ class PipelineBuilder:
         )
 
     def build_runtime(self) -> dict[str, Any]:
+        """将蓝图组装为可运行的 GStreamer 对象图。
+
+        输出编码元素创建失败且允许硬件回退时，重建为 fake sink；此回退只用于保持
+        推理和指标链路可运行，不能把它当成视频输出成功。
+        """
         blueprint = self.build()
+        # runtime 字典把硬件对象与装配计划分开保存，Manager 随后注入应用侧 probe 依赖。
         runtime = {
             "blueprint": blueprint,
             "gstreamer_available": self._runtime_factory.available,
@@ -211,6 +243,7 @@ class PipelineBuilder:
             "gst": self._runtime_factory.gst,
         }
         if not self._runtime_factory.available:
+            # CI/开发机只返回动态 pad 和 request pad 计划，不尝试创建真实 Gst 元素。
             runtime["dynamic_links"] = self.prepare_dynamic_pad_handlers(runtime)
             runtime["streammux_requests"] = self.prepare_streammux_requests(runtime)
             logging.warning("GStreamer runtime is not available in the current environment")
@@ -222,6 +255,7 @@ class PipelineBuilder:
             if not self._should_fallback_to_fake_output(exc):
                 raise
             logging.warning("output hardware path failed, falling back to fakesink: %s", exc)
+            # 回退仅替换编码/输出尾部；主检测和 probe 仍按同一蓝图重新装配。
             self._forced_output_sink = "fake"
             blueprint = self.build()
             runtime = {
@@ -246,6 +280,7 @@ class PipelineBuilder:
         return self._forced_output_sink == "fake"
 
     def _assemble_runtime(self, runtime: dict[str, Any], blueprint: PipelineBlueprint) -> dict[str, Any]:
+        """按固定顺序创建、加入、静态连接、注册动态 pad，并申请 streammux 输入 pad。"""
         runtime["pipeline"] = self._runtime_factory.create_pipeline(blueprint.app_name)
         runtime["elements"] = self._runtime_factory.create_elements(blueprint)
         self.add_elements_to_pipeline(runtime)
@@ -278,6 +313,7 @@ class PipelineBuilder:
         return any(marker in text for marker in output_markers)
 
     def _build_nodes(self, branches: tuple[SourceBranchSpec, ...]) -> tuple[PipelineNodeSpec, ...]:
+        """声明主图：source branches -> streammux -> nvinfer -> tracker/tiler/OSD -> 输出。"""
         ds = self.settings.deepstream
         tracker_enabled = bool(getattr(ds, "enable_tracker", True))
         osd_enabled = bool(getattr(ds, "enable_osd", True))
@@ -287,6 +323,7 @@ class PipelineBuilder:
         use_rtsp_sink = output_sink == "rtsp"
         tiler_enabled = bool(getattr(ds, "enable_tiler", False)) and len(branches) > 1
         live_source = any(branch.source.is_rtsp for branch in branches)
+        # 主图固定前缀：各输入支路 -> streammux 合批 -> nvinfer 主检测。
         nodes: list[PipelineNodeSpec] = [
             PipelineNodeSpec(
                 "pipeline",
@@ -337,6 +374,7 @@ class PipelineBuilder:
             ),
         ]
 
+        # OSD/tiler 可选插入主检测之后；metadata probe 必须选择 tiler 之前的挂点。
         if osd_enabled:
             insert_at = 4 if tracker_enabled else 3
             nodes[insert_at:insert_at] = [
@@ -399,6 +437,7 @@ class PipelineBuilder:
                 ]
             )
 
+        # fake sink 用于压测/故障诊断，跳过颜色转换、编码和 mux，不能代表视频输出成功。
         if not use_fake_sink:
             nodes[5:5] = [
                 PipelineNodeSpec(
@@ -447,6 +486,7 @@ class PipelineBuilder:
                 ),
             )
 
+        # 输入支路节点追加到统一元素表；实际连接由 links 与动态 pad 计划完成。
         for branch in branches:
             nodes.extend(
                 PipelineNodeSpec(
@@ -462,8 +502,10 @@ class PipelineBuilder:
         return tuple(nodes)
 
     def _build_links(self, branches: tuple[SourceBranchSpec, ...]) -> tuple[tuple[str, str], ...]:
+        """给出静态连边；动态 demux/RTSP pad 和 streammux request pad 在 runtime 另行处理。"""
         links: list[tuple[str, str]] = []
         use_rtsp_sink = self._effective_output_sink() == "rtsp"
+        # 每支路最终接 streammux 的不同 request pad；这里保留声明，runtime 再实际申请 pad。
         for branch in branches:
             links.extend(branch.links)
             links.append((branch.mux_input, "streammux"))
@@ -511,8 +553,12 @@ class PipelineBuilder:
         return tuple(links)
 
     def _build_probes(self) -> tuple[tuple[str, str], ...]:
-        # Latency instrumentation starts here. The gate remains a no-op when
-        # FPS control is disabled, but the probe is still needed for metrics.
+        """选择 probe 挂点。
+
+        ``primary-infer:sink`` 记录端到端起点并执行可选 FPS gate；tracker 后的
+        probe 提取每路检测 metadata；tiler 前 probe 复制原始 RGBA 帧供专用 worker。
+        """
+        # FPS 控制关闭时 gate 为 no-op，但起点时延指标仍需此 probe。
         probes: list[tuple[str, str]] = [("primary-infer", "sink")]
         if (
             getattr(self.settings.deepstream, "enable_osd", True)
@@ -541,6 +587,7 @@ class PipelineBuilder:
         }
 
     def _build_output_policy(self) -> dict[str, Any]:
+        """把 sink 选择转为可审计策略，供 Manager 停机 EOS 与 dashboard 解释运行模式。"""
         output_sink = self._effective_output_sink()
         return {
             "enable_osd": getattr(self.settings.deepstream, "enable_osd", True),
@@ -612,6 +659,7 @@ class PipelineBuilder:
         return "video/x-raw(memory:NVMM),format=NV12"
 
     def _build_tracker_properties(self) -> dict[str, Any]:
+        """读取可选 tracker YAML；读取失败不阻塞主图，回退 DeepStream IOU 默认配置。"""
         tracker_path = self.settings.deepstream.tracker_config_path
         defaults: dict[str, Any] = {
             "tracker-width": 640,
@@ -679,6 +727,7 @@ class PipelineBuilder:
             raise ValueError("at least one structured output must be enabled")
 
     def _merge_branch_properties(self, node) -> dict[str, Any]:
+        """以优化配置覆盖每路 pre-mux queue，保证输入支路同样采用有界/可泄漏策略。"""
         properties = dict(node.properties)
         if node.name.startswith("pre-mux-queue"):
             properties.update(self._queue_properties(max_buffers=self.settings.optimization.max_queue_size))
@@ -688,6 +737,7 @@ class PipelineBuilder:
         return self._forced_output_sink or getattr(self.settings.deepstream, "output_sink", "rtmp")
 
     def _queue_properties(self, *, max_buffers: int) -> dict[str, Any]:
+        """生成有界 queue 参数；leaky=2 丢弃最旧 buffer，保持实时性而非无限积压。"""
         properties: dict[str, Any] = {
             "max-size-buffers": max_buffers,
             "max-size-time": 0,
@@ -698,6 +748,7 @@ class PipelineBuilder:
         return properties
 
     def _build_dynamic_links(self, blueprint: PipelineBlueprint) -> tuple[dict[str, Any], ...]:
+        """抽取 rtspsrc/qtdemux 等动态源的连接计划，静态 link 阶段会刻意跳过它们。"""
         dynamic_links: list[dict[str, Any]] = []
         for node in blueprint.nodes:
             if node.flags.get("dynamic_pad"):
@@ -726,6 +777,7 @@ class PipelineBuilder:
         }
 
     def add_elements_to_pipeline(self, runtime: dict[str, Any]) -> None:
+        """将已创建元素加入 Gst.Pipeline；失败立即中断，避免得到半装配 pipeline。"""
         pipeline = runtime.get("pipeline")
         elements = runtime.get("elements", {})
         if pipeline is None or not elements:
@@ -736,12 +788,14 @@ class PipelineBuilder:
                 raise RuntimeError(f"failed to add element `{getattr(element, 'name', element)}` to pipeline")
 
     def link_static_elements(self, runtime: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+        """连接确定的元素对；动态 source pad 与 streammux request pad 被有意跳过。"""
         elements = runtime.get("elements", {})
         static_links: tuple[tuple[str, str], ...] = runtime.get("static_links", ())
         linked_pairs: list[tuple[str, str]] = []
         if not elements:
             return static_links
 
+        # source 动态 pad 和 streammux request pad 都不能使用 Element.link 的静态路径。
         dynamic_sources = {plan["source"] for plan in runtime.get("dynamic_links", ())}
         for source_name, target_name in static_links:
             if source_name in dynamic_sources or target_name == "streammux":
@@ -757,10 +811,12 @@ class PipelineBuilder:
         return tuple(linked_pairs)
 
     def prepare_dynamic_pad_handlers(self, runtime: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+        """为 qtdemux/rtspsrc 注册 pad-added 回调，在出现视频 pad 后再建立连接。"""
         blueprint: PipelineBlueprint = runtime["blueprint"]
         dynamic_links = self._build_dynamic_links(blueprint)
         elements = runtime.get("elements", {})
 
+        # pad-added 回调只保存 target，不持有 source frame/metadata，生命周期由 Gst 管理。
         for plan in dynamic_links:
             element = elements.get(plan["source"])
             if element is None:
@@ -776,10 +832,12 @@ class PipelineBuilder:
         return dynamic_links
 
     def prepare_streammux_requests(self, runtime: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+        """申请 ``nvstreammux.sink_N`` 并连接各分路队列，N 与启用 source 顺序一一对应。"""
         blueprint: PipelineBlueprint = runtime["blueprint"]
         requests: list[dict[str, Any]] = []
         elements = runtime.get("elements", {})
         streammux = elements.get("streammux")
+        # streammux sink_N 必须与 SourceFactory 的启用 source 顺序一致，不能使用原 YAML 下标。
         for index in range(blueprint.source_count):
             queue_name = f"pre-mux-queue-{index + 1}"
             request = {
@@ -808,10 +866,12 @@ class PipelineBuilder:
         return tuple(requests)
 
     def attach_probe_points(self, runtime: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+        """把 blueprint probe 转成 Gst buffer probe，并注入应用侧回调依赖。"""
         blueprint: PipelineBlueprint = runtime["blueprint"]
         attachments: list[dict[str, Any]] = []
         elements = runtime.get("elements", {})
         probe_type = self._runtime_factory.buffer_probe_type()
+        # 一个 probe 模式只做一类轻量工作：gate/起点、帧复制，或 metadata 解析。
         for element_name, pad_name in blueprint.probes:
             attachments.append(
                 {
@@ -827,6 +887,7 @@ class PipelineBuilder:
             if pad is None:
                 raise RuntimeError(f"failed to get pad `{pad_name}` from `{element_name}`")
             if hasattr(pad, "add_probe"):
+                # 将 Python 服务作为 user_data 注入，避免 Builder 直接依赖 Orchestrator。
                 user_data = {
                     "probe_registry": runtime.get("probe_registry"),
                     "meta_parser": runtime.get("meta_parser"),
@@ -861,6 +922,7 @@ class PipelineBuilder:
         raise RuntimeError(f"no dynamic target found for `{source_name}`")
 
     def _on_dynamic_pad_added(self, src, pad, user_data) -> None:
+        """只接受视频/RTP 动态 pad，忽略音频和已连接 pad，避免多媒体文件误连。"""
         _ = src
         target = user_data["target"]
         sink_pad = target.get_static_pad("sink")
@@ -894,6 +956,7 @@ class PipelineBuilder:
         return media_type.startswith("video/") or media_type == "application/x-rtp"
 
     def _on_probe_buffer(self, pad, info, user_data=None) -> int:
+        """处理三类 probe 模式：推理前丢帧/计时、帧复制、metadata 解析并发射结果。"""
         _ = pad
         user_data = user_data or {}
         if user_data.get("mode") == "pre_infer_gate":
@@ -922,12 +985,14 @@ class PipelineBuilder:
         return 1
 
     def _mark_pipeline_latency_start(self, info: object, runtime_metrics: object | None) -> None:
+        """在进入 nvinfer 前以 stream/frame 标记真实 pipeline 时延起点。"""
         if runtime_metrics is None or not hasattr(runtime_metrics, "mark_pipeline_start"):
             return
         batch_meta = self._extract_nvds_batch_meta(info)
         if batch_meta is None:
             return
         frame_list = getattr(batch_meta, "frame_meta_list", None)
+        # 一个 mux batch 含多路 frame_meta，必须逐帧标记才能与后续 JSONL 写入匹配。
         for frame_meta in self._iterate_glist(frame_list, "NvDsFrameMeta"):
             source_id = self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0))
             runtime_metrics.mark_pipeline_start(
@@ -936,7 +1001,7 @@ class PipelineBuilder:
             )
 
     def _capture_probe_frames(self, info: object, frame_store: object | None) -> None:
-        """Copy only configured task streams out of the DeepStream surface."""
+        """仅复制启用专用任务的分路帧到 CPU FrameStore，避免所有流都发生昂贵内存拷贝。"""
         if frame_store is None or not hasattr(frame_store, "should_capture"):
             return
         buffer = self._extract_probe_buffer(info)
@@ -950,6 +1015,7 @@ class PipelineBuilder:
             import numpy as np
 
             frame_list = getattr(batch_meta, "frame_meta_list", None)
+            # 只复制被 bootstrap 标记为需要专用能力的 stream，RGBA -> CPU 是昂贵边界。
             for frame_meta in self._iterate_glist(frame_list, "NvDsFrameMeta"):
                 source_id = self._safe_int(
                     self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0)),
@@ -972,12 +1038,14 @@ class PipelineBuilder:
             )
 
     def _extract_probe_payload(self, info: object) -> object:
+        """优先调用 C++ parser；失败后退回 Python 遍历，并把两条路径耗时记入 metrics。"""
         self._record_probe_metric("probe_batches")
         batch_meta = self._extract_nvds_batch_meta(info)
         if batch_meta is not None:
             if bool(getattr(self.settings.deepstream, "enable_osd", True)):
                 osd_stats = self._apply_osd_track_labels(batch_meta)
                 self._add_probe_metrics(**osd_stats)
+            # C++ 快路径减少 Python GList 遍历；失败后保留功能正确的 Python fallback。
             if self._cpp_probe.available:
                 try:
                     buffer = self._extract_probe_buffer(info)
@@ -1022,7 +1090,7 @@ class PipelineBuilder:
         return None
 
     def _normalize_native_track_ids(self, payload: object) -> None:
-        """Apply the same local/global track contract as Python metadata parsing."""
+        """让 C++ parser 输出遵循 Python 路径的本地/全局 track ID 契约。"""
         if not isinstance(payload, dict):
             return
         frame_list = payload.get("frame_meta_list", [])
@@ -1089,6 +1157,7 @@ class PipelineBuilder:
         return payload
 
     def _frame_meta_to_payload(self, frame_meta: object) -> dict[str, Any]:
+        """把单个 NvDsFrameMeta 拷贝为普通 dict，离开 probe 后不再持有原生 metadata。"""
         source_id = self._safe_get(frame_meta, "source_id", self._safe_get(frame_meta, "pad_index", 0))
         source_index = self._safe_int(source_id, 0)
         ntp_timestamp = self._safe_get(frame_meta, "ntp_timestamp", None)
@@ -1125,6 +1194,7 @@ class PipelineBuilder:
         return frame
 
     def _object_meta_to_payload(self, obj_meta: object, *, source_id: int) -> dict[str, Any]:
+        """复制检测/跟踪框，并同时保留 DeepStream 原始 object_id 与本流连续 track_id。"""
         rect = getattr(obj_meta, "rect_params", None)
         rect_payload = {
             "left": self._safe_get(rect, "left", 0.0),
@@ -1145,6 +1215,7 @@ class PipelineBuilder:
         }
 
     def _apply_osd_track_labels(self, batch_meta: object) -> dict[str, int]:
+        """按变化阈值更新 OSD 文本，减少每帧重复修改 DeepStream display metadata。"""
         stats = {"osd_frames": 0, "osd_objects": 0, "osd_updates": 0}
         frame_list = getattr(batch_meta, "frame_meta_list", None)
         for frame_meta in self._iterate_glist(frame_list, "NvDsFrameMeta"):
@@ -1231,6 +1302,7 @@ class PipelineBuilder:
                 self._probe_metrics_state[key] = self._probe_metrics_state.get(key, 0) + int(value)
 
     def probe_metrics(self) -> dict[str, Any]:
+        """返回 probe 实际走 C++/Python 路径及 OSD 更新开销的聚合快照。"""
         with self._probe_metrics_lock:
             state = dict(self._probe_metrics_state)
         native_calls = state["native_calls"]
@@ -1249,6 +1321,7 @@ class PipelineBuilder:
         }
 
     def _local_track_id(self, source_id: object, global_track_id: object) -> int:
+        """为每条流建立稳定的本地连续 ID，避免 DeepStream 全局 ID 对业务显示造成跳号。"""
         if not self._is_valid_track_id(global_track_id):
             return self._safe_int(global_track_id, -1)
         source_index = self._safe_int(source_id, 0)

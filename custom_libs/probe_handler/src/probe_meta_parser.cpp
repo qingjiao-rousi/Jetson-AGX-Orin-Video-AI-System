@@ -1,5 +1,8 @@
 #include "probe_handler/probe_meta_parser.h"
 
+// C++ 快路径只读取 probe 回调期间有效的 DeepStream metadata，并立即复制为普通值对象。
+// 不把 NvDs* 指针交给 Python 或跨回调保存，避免 buffer 生命周期结束后的悬空引用。
+
 #include <algorithm>
 #include <cstring>
 #include <iomanip>
@@ -17,6 +20,7 @@ namespace probe_handler {
 namespace {
 
 void copy_label(char* destination, const char* source) {
+    // obj_label 属于 DeepStream metadata；复制到固定大小数组以让结果脱离原对象生命周期。
     if (destination == nullptr) {
         return;
     }
@@ -26,6 +30,7 @@ void copy_label(char* destination, const char* source) {
 }
 
 std::string escape_json(const char* value) {
+    // 不引入额外 JSON 依赖，输出仅包含标签等有限字符串字段，故在 ABI 边界手动转义。
     std::ostringstream out;
     const char* text = value == nullptr ? "" : value;
     for (const char* cursor = text; *cursor != '\0'; ++cursor) {
@@ -56,6 +61,7 @@ std::string escape_json(const char* value) {
 }  // namespace
 
 std::vector<ProbeFrameResult> parse_nvds_batch_meta(const _NvDsBatchMeta* batch_meta) {
+    // 一个 GstBuffer 可被 nvstreammux 合成多帧，因此必须遍历 batch 内全部 frame_meta。
     std::vector<ProbeFrameResult> frames;
     if (batch_meta == nullptr) {
         return frames;
@@ -71,6 +77,7 @@ std::vector<ProbeFrameResult> parse_nvds_batch_meta(const _NvDsBatchMeta* batch_
         }
 
         ProbeFrameResult frame;
+        // pad_index 是 streammux 输入序号，和 Python 的 canonical stream-N 对应。
         frame.stream_id = static_cast<uint32_t>(frame_meta->pad_index);
         frame.frame_id = static_cast<uint64_t>(frame_meta->frame_num);
         frame.ntp_timestamp = static_cast<uint64_t>(frame_meta->ntp_timestamp);
@@ -102,6 +109,7 @@ std::vector<ProbeFrameResult> parse_nvds_batch_meta(const _NvDsBatchMeta* batch_
 }
 
 std::string frames_to_json(const std::vector<ProbeFrameResult>& frames) {
+    // JSON 不是最终业务格式，而是稳定且易于 ctypes 传递的 C++/Python ABI 中间表示。
     std::ostringstream out;
     out << '[';
     for (std::size_t frame_index = 0; frame_index < frames.size(); ++frame_index) {
@@ -144,6 +152,7 @@ extern "C" {
 namespace {
 
 const char* allocate_json(const _NvDsBatchMeta* batch_meta) {
+    // 分配所有权明确交给 probe_free_json，不能返回 std::string::c_str() 的临时指针。
     const auto frames = probe_handler::parse_nvds_batch_meta(batch_meta);
     const auto payload = probe_handler::frames_to_json(frames);
     auto* result = new char[payload.size() + 1];
@@ -162,6 +171,7 @@ const char* probe_parse_gst_buffer_json(const void* buffer) {
     if (buffer == nullptr) {
         return allocate_json(nullptr);
     }
+    // Python ctypes 传入的是 GstBuffer 地址；仅在当前 probe 回调内读取其 batch metadata。
     auto* gst_buffer = reinterpret_cast<GstBuffer*>(const_cast<void*>(buffer));
     return allocate_json(reinterpret_cast<const _NvDsBatchMeta*>(
         gst_buffer_get_nvds_batch_meta(gst_buffer)));

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""运行时指标聚合器：逐帧状态、队列/控制快照、资源快照和有限时延样本。"""
+
 import json
 import os
 import resource
@@ -10,10 +12,17 @@ from pathlib import Path
 from threading import Lock
 from typing import Any
 
+# 使用 FrameResult 的 stream/frame 作为时延匹配键，避免把多路 batch 结果混为一个样本。
 from app.domain.entities import FrameResult
 
 
 class RuntimeMetricsRecorder:
+    """采集可复现实验和 dashboard 共用的运行时快照。
+
+    时延定义严格为 ``primary-infer:sink`` 到对应主结果 JSONL 成功写入，使用单调时钟。
+    它覆盖主 pipeline、Python 编排和 writer 排队，但不包含相机采集、解码前等待、
+    显示、编码或网络传输，不能表述为 camera-to-display 延迟。
+    """
     def __init__(
         self,
         path: Path | None,
@@ -38,6 +47,7 @@ class RuntimeMetricsRecorder:
         self._probe_metrics_provider = None
         self._control_metrics_provider = None
         self._queue_metrics_provider = None
+        # 两张待匹配表连接 probe 起点、编排器结果与异步 JSONL 写入三个时间点。
         self._pending_pipeline: dict[tuple[str, int], float] = {}
         self._pending_result_write: dict[tuple[str, int], float] = {}
         self._pipeline_latency_ms: deque[float] = deque(maxlen=20_000)
@@ -50,16 +60,19 @@ class RuntimeMetricsRecorder:
         self._pending_limit = 20_000
 
     def set_probe_metrics_provider(self, provider) -> None:
+        """注册 C++/Python metadata probe 指标提供者，采样时按需读取。"""
         self._probe_metrics_provider = provider
 
     def set_control_metrics_provider(self, provider) -> None:
+        """注册 FPS 与背压控制器指标提供者，避免控制器反向依赖 recorder。"""
         self._control_metrics_provider = provider
 
     def set_queue_metrics_provider(self, provider) -> None:
-        """Register bounded-queue stats without coupling metrics to components."""
+        """注册 writer/task-buffer/FrameStore/worker 队列快照，不耦合具体组件类型。"""
         self._queue_metrics_provider = provider
 
     def start(self) -> None:
+        """开始新的进程内指标窗口；配置路径存在时以 JSONL 追加周期快照。"""
         self._started_at = time.monotonic()
         self._last_emit_at = 0.0
         if self._path is not None:
@@ -67,10 +80,12 @@ class RuntimeMetricsRecorder:
             self._file = self._path.open("a", encoding="utf-8")
 
     def observe(self, result: FrameResult, *, gpu_snapshot: dict[str, object] | None = None) -> None:
+        """记录一帧主结果、按流状态及 pipeline 到编排器的时延，并按周期落盘。"""
         now = time.monotonic()
         with self._lock:
             if gpu_snapshot:
                 self._last_gpu_snapshot = dict(gpu_snapshot)
+            # 主结果抵达此处时 pipeline 段结束，但 writer 段还未完成。
             self._record_result_latency_locked(result, now)
             self._total_frames += 1
             stream = self._streams.setdefault(
@@ -99,17 +114,20 @@ class RuntimeMetricsRecorder:
             if previous_status == "stale":
                 stream["recovered_count"] += 1
 
+            # 指标按固定周期写，而非每帧写，避免 metrics I/O 自己成为性能变量。
             if now - self._last_emit_at >= self._interval_seconds:
                 self._mark_stale_streams(now)
                 self._emit_locked(now, gpu_snapshot=gpu_snapshot)
 
     def snapshot(self) -> dict[str, Any]:
+        """返回即时快照并更新 stale 流状态，不强制写文件。"""
         now = time.monotonic()
         with self._lock:
             self._mark_stale_streams(now)
             return self._payload(now, gpu_snapshot=None)
 
     def close(self) -> None:
+        """关闭前写出最后一条聚合快照，确保短时 benchmark 也有尾部指标。"""
         with self._lock:
             if self._started_at > 0:
                 self._emit_locked(time.monotonic(), gpu_snapshot=self._last_gpu_snapshot)
@@ -117,17 +135,16 @@ class RuntimeMetricsRecorder:
                 self._file.close()
 
     def mark_pipeline_start(self, stream_id: str, frame_id: int) -> None:
-        """Mark a frame immediately before primary inference.
+        """在主 nvinfer 之前标记时延起点。
 
-        This uses a monotonic clock and measures application processing time,
-        not camera capture-to-display latency.
+        使用 monotonic 时钟衡量应用处理时间，不是摄像机采集到显示端的物理延迟。
         """
         key = (str(stream_id), int(frame_id))
         with self._lock:
             self._bounded_store_locked(self._pending_pipeline, key, time.monotonic(), "start")
 
     def mark_result_written(self, result: FrameResult) -> None:
-        """Mark asynchronous JSON persistence after the writer commits a row."""
+        """在异步 writer 成功落盘后匹配同一帧，完成 writer 与端到端样本。"""
         key = (result.stream_id, int(result.frame_id))
         now = time.monotonic()
         with self._lock:
@@ -136,11 +153,13 @@ class RuntimeMetricsRecorder:
                 self._unmatched_writes += 1
                 return
             self._writer_latency_ms.append((now - result_started) * 1000.0)
+            # 仅在同一 stream/frame 的起点存在时才形成 end_to_end 样本。
             pipeline_started = self._pending_pipeline.pop(key, None)
             if pipeline_started is not None:
                 self._end_to_end_latency_ms.append((now - pipeline_started) * 1000.0)
 
     def _record_result_latency_locked(self, result: FrameResult, now: float) -> None:
+        """主结果抵达编排器时记录 pipeline 段，并保存等待 JSONL 落盘的中间标记。"""
         key = (result.stream_id, int(result.frame_id))
         pipeline_started = self._pending_pipeline.get(key)
         if pipeline_started is None:
@@ -156,6 +175,7 @@ class RuntimeMetricsRecorder:
         value: float,
         kind: str,
     ) -> None:
+        """限制未匹配帧的状态表大小；极端丢帧/写入失败不能导致 metrics 内存无界增长。"""
         if key not in target and len(target) >= self._pending_limit:
             oldest_key = next(iter(target))
             target.pop(oldest_key, None)
@@ -166,6 +186,7 @@ class RuntimeMetricsRecorder:
         target[key] = value
 
     def _mark_stale_streams(self, now: float) -> None:
+        """按最后结果到达时间标记 stale；keepalive 是状态标志，不会生成新推理帧。"""
         for stream in self._streams.values():
             age = now - float(stream.get("last_seen_monotonic", now))
             if age <= self._stale_after_seconds:
@@ -186,6 +207,7 @@ class RuntimeMetricsRecorder:
         self._file.flush()
 
     def _payload(self, now: float, *, gpu_snapshot: dict[str, object] | None) -> dict[str, Any]:
+        """生成单条 JSONL 指标快照，所有 provider 在此刻读取最新有界状态。"""
         elapsed = max(now - self._started_at, 0.001)
         return {
             "timestamp": _utc_now(),
@@ -218,6 +240,7 @@ class RuntimeMetricsRecorder:
 
 
 def _stream_payload(stream: dict[str, Any], now: float) -> dict[str, Any]:
+    """生成分路吞吐/状态估算；dropped_frame_rate 由 frame_id 间隙推算，并非解码器硬计数。"""
     first_seen = float(stream.get("first_seen_monotonic", now))
     last_seen = float(stream.get("last_seen_monotonic", now))
     elapsed = max(last_seen - first_seen, 0.001)
@@ -249,6 +272,7 @@ def _stream_payload(stream: dict[str, Any], now: float) -> dict[str, Any]:
 
 
 def _process_snapshot() -> dict[str, Any]:
+    """采集当前进程 CPU 时间和峰值 RSS；不等同全系统 CPU/RAM 使用量。"""
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return {
         "user_cpu_seconds": round(float(usage.ru_utime), 3),
@@ -258,6 +282,7 @@ def _process_snapshot() -> dict[str, Any]:
 
 
 def _latency_summary(samples: deque[float]) -> dict[str, float | int | None]:
+    """基于有限历史窗口汇总时延，长时间运行时早期样本会被淘汰。"""
     values = sorted(samples)
     if not values:
         return {"samples": 0, "average_ms": None, "p50_ms": None, "p95_ms": None, "max_ms": None}

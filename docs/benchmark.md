@@ -44,10 +44,55 @@ scripts/deploy/build_fp16_engines.sh --specialists-only
 | 输入 | 视频文件 SHA256、路数、时长、分辨率、帧率 |
 | 配置 | FP16/INT8 YAML、engine SHA256、sink、batch size、预热规则 |
 | 性能 | 聚合 FPS、每路 FPS、P50/P95、GPU/RAM、GPU+SOC 功耗、温度 |
-| 背压 | writer/task-buffer/frame-store/FPS controller 的累计丢弃数与 writer 错误数 |
+| 背压 | writer/task-buffer/FPS controller 的累计丢弃数、FrameStore FIFO 淘汰数、各 worker 的 `missing_frames`、队列等待与任务时延、writer 错误数 |
 | 有效性 | 程序退出码、EOS/错误日志、JSONL 行数、file sink 的输出视频可播放性 |
 
 不要在同一张表中混用不同视频、不同功耗模式或不同 sink 的结果。
+
+## 任务调度实验
+
+`configs/app/app_multifile_8_primary_int8_isolated_tasks.yaml` 是主模型 INT8
+基线后的受控调度实验。它保持主模型 INT8 engine、专用模型 FP16 engine、输入视频和
+路由间隔不变，仅将共享任务缓冲替换为独立的 latest-request 队列；worker drain 时，等待
+超过任务 `stale_after_ms` 的请求会被丢弃。初始“容量/deadline”为 PPE `16/750 ms`、
+姿态 `8/750 ms`、烟火 `8/750 ms`、车牌 `4/1000 ms`。
+
+应使用同一组八路 `fake` 输入与观测基线对比，记录每任务的 `dropped`、`replaced`、
+`stale_dropped`、队列等待 P50/P95、worker `missing_frames`、任务时延 P50/P95、事件
+签名和系统端到端时延。只有事件签名仍可解释时，`missing_frames` 或队列 P95 的下降才有
+价值；`stale_dropped` 是换取新鲜度的预期行为，不是处理失败。
+
+## FrameStore 分路容量实验
+
+`scripts/benchmark/run_frame_store_capacity_matrix.py` 在独立队列、PPE
+batch-1 的固定条件下，先运行共享总容量 128 帧基线，再运行每路 16、32、64 帧配额
+（总容量分别为 128、256、512）。它记录按 worker 的 `missing_frames`、frame age
+P95、任务时延 P95、全局/单路淘汰数以及系统 FPS 和端到端 P95。
+
+共享 128 与每路 16 的总容量相同，二者用于判断单路隔离本身是否有价值；每路 32/64
+用于判断保留窗口是否仍不足。不能仅以 FrameStore 淘汰数判断结果，优先以实际
+`missing_frames` 和 frame age 判断。
+
+### 2026-08-11 结果与决策
+
+结果来源：`outputs/frame_store_capacity/20260811T144341Z/matrix_summary.json`。
+使用八路本地 MP4、`fake` sink、主模型 INT8、专用模型 FP16、独立任务队列和 PPE
+batch-1；每组完整运行三次。`missing_frames` 是 worker 真正取不到原始帧的次数，不能与
+FrameStore 的 FIFO 淘汰总数混为一谈。
+
+| FrameStore 模式 | 总容量 | 每路容量 | 系统 FPS | E2E P95 (ms) | PPE / Pose / Fire 缺帧 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| shared | 128 | - | 69.38 | 467.73 | 144.67 / 88.33 / 404.67 |
+| per-stream | 128 | 16 | 67.82 | 474.25 | 133.00 / 95.00 / 448.33 |
+| per-stream | 256 | 32 | 68.54 | 472.65 | 111.33 / 72.67 / 461.33 |
+| per-stream | 512 | 64 | 66.89 | 491.45 | 133.00 / 69.67 / 448.67 |
+
+分路 32/64 可以降低部分 PPE/Pose 缺帧，但 Fire/Smoke 缺帧增加，且没有改善系统端到端
+时延；分路 64 还降低了系统 FPS。所有组的淘汰数仍接近输入帧数减去最终缓存容量，说明
+连续视频下 FIFO 处于正常周转，不能把淘汰数本身当作优化目标。
+
+决策：默认部署继续使用共享总容量 128 帧，不设置分路配额。当前更值得继续定位的是
+专用 worker 与主链路之间的 CPU/GPU 调度竞争，而非继续扩大 FrameStore。
 
 ## 执行
 
@@ -115,7 +160,9 @@ python3 scripts/benchmark/run_benchmark_matrix.py \
 
 相对同一轮 FP16 对照，候选 INT8 的 fake/file FPS 分别提高约 7.5%/6.3%，E2E P50
 分别降低约 13.0%/11.9%，GPU+SoC 功耗分别降低约 11.6%/11.7%。task-buffer 总丢弃
-分别降低约 22.8%/19.7%，但 FrameStore 丢弃没有变化，说明帧存储仍是独立瓶颈。
+分别降低约 22.8%/19.7%。FrameStore 的累计淘汰数在两组中没有变化，但该字段表示有限
+FIFO 缓存的自然周转，不能单独等同于业务帧缺失或性能瓶颈。后续应以各 worker 的
+`missing_frames`、按 consumer 的命中/未命中、FrameStore frame age 和任务时延共同判断。
 
 这组结果支持候选 INT8 进入真实业务帧验证和受控部署评估，但不应把它与 FP16 宣称为
 完全等价：COCO person Recall 仍低约 1.7 个百分点，且较低阈值会改变下游任务触发量。

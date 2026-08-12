@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+"""GStreamer runtime 的生命周期与 bus 消息管理。"""
+
 import logging
 from threading import Event, Thread, current_thread
 
+# PipelineState 是暴露给编排器/UI 的最小运行态，不泄漏 Gst 对象。
 from app.domain.entities import PipelineState
+# Blueprint 用于描述拓扑；Registry 把 probe 解析结果交回应用层。
 from app.infrastructure.pipeline.builder import PipelineBlueprint
 from app.infrastructure.pipeline.probes import ProbeRegistry
 
 
 class PipelineManager:
+    """将声明式 ``PipelineBlueprint`` 变为运行时 pipeline，并处理其状态机。
+
+    Builder 负责组装元素和 probe，Manager 负责 PLAYING/NULL 转换、EOS、错误和
+    可选输出回退。bus 轮询使用独立守护线程，避免依赖应用层是否运行 GLib 主循环。
+    """
     def __init__(self, builder, probes: ProbeRegistry | None = None, meta_parser=None, frame_store=None) -> None:
+        # builder 创建 GStreamer 图；parser/FrameStore 是 probe 回调所需的应用侧依赖。
         self._builder = builder
         self._probes = probes or ProbeRegistry()
         self._meta_parser = meta_parser
@@ -27,28 +37,36 @@ class PipelineManager:
         self._runtime_metrics = None
 
     def set_frame_gate(self, gate) -> None:
-        """Set a pre-inference buffer gate, typically the FPS controller."""
+        """设置主推理前的 buffer gate，通常由 FPS 控制器按背压丢弃帧。"""
         self._frame_gate = gate
 
     def set_runtime_metrics(self, runtime_metrics) -> None:
+        """注入 probe 时延标记器；Manager 不依赖其具体实现，便于关闭 metrics 的运行。"""
         self._runtime_metrics = runtime_metrics
 
     def register_plate_annotation(self, stream_id: str, track_id: int, event: dict) -> None:
+        """转发异步 OCR 结果给 Builder 的 OSD 状态表，下一帧同轨迹可显示车牌。"""
         if hasattr(self._builder, "register_plate_annotation"):
             self._builder.register_plate_annotation(stream_id, track_id, event)
 
     def start(self) -> None:
+        """装配运行时对象、注册 probe 后切到 PLAYING；编码路径失败时可回退 fake sink。"""
         if self._running:
             return
+        # build_runtime 只负责 GStreamer 对象图；这些应用侧依赖必须在 probe 注册前注入。
         self._runtime = self._builder.build_runtime()
+        # runtime 字典是 Builder 与 Manager 的窄接口：GStreamer 对象归 Builder，
+        # 回调所需的 Python 服务由 Manager 在真正挂 probe 前注入。
         self._runtime["probe_registry"] = self._probes
         self._runtime["meta_parser"] = self._meta_parser
         self._runtime["frame_store"] = self._frame_store
         self._runtime["frame_gate"] = self._frame_gate
         self._runtime["runtime_metrics"] = self._runtime_metrics
+        # 必须先挂 probe，再 PLAYING；否则首个 batch 可能没有 metadata/时延标记。
         self._register_probe_points()
         self._pipeline = self._runtime["blueprint"]
         self._stop_event.clear()
+        # signal watch 兼容 GLib；poller 保证纯 CLI 模式也能收到 EOS/ERROR。
         self._attach_bus_watch()
         try:
             self._set_pipeline_state_playing()
@@ -62,9 +80,11 @@ class PipelineManager:
         self._last_message_type = "STARTED"
 
     def stop(self) -> None:
+        """请求 bus 线程退出，并在 file sink 下先发 EOS，确保 MP4 容器尾部被写完整。"""
         self._stop_event.set()
         bus_thread = self._bus_thread
         if self._runtime is not None:
+            # pipeline 先进入 NULL，随后才 join bus 线程，避免线程继续消费旧 bus 消息。
             pipeline = self._runtime.get("pipeline")
             gst = self._runtime.get("gst")
             if pipeline is not None and gst is not None and hasattr(pipeline, "set_state"):
@@ -79,6 +99,7 @@ class PipelineManager:
         self._bus_thread = None
 
     def _finalize_file_output(self, pipeline, gst) -> None:
+        """文件输出不能直接 NULL：先等待 EOS 或 ERROR，给 qtmux 写入索引的机会。"""
         if not self._runtime:
             return
         blueprint = self._runtime.get("blueprint")
@@ -97,6 +118,7 @@ class PipelineManager:
             logging.warning("failed to finalize file output with EOS: %s", exc)
 
     def restart(self) -> None:
+        """完全重建运行时 pipeline；用于明确的恢复策略，而非每个 bus warning。"""
         self.stop()
         self.start()
 
@@ -132,6 +154,7 @@ class PipelineManager:
         return ()
 
     def describe(self) -> dict:
+        """导出可 JSON 化的蓝图摘要，供 dashboard 和调试而非实际 runtime 控制。"""
         if not isinstance(self._pipeline, PipelineBlueprint):
             return {
                 "running": self._running,
@@ -194,6 +217,7 @@ class PipelineManager:
         }
 
     def _attach_bus_watch(self) -> None:
+        """注册 signal watch 以兼容 GLib 环境；实际可靠处理仍由轮询线程完成。"""
         if not self._runtime:
             return
         pipeline = self._runtime.get("pipeline")
@@ -207,6 +231,7 @@ class PipelineManager:
         self._bus_watch_attached = True
 
     def _start_bus_polling(self) -> None:
+        """启动有限超时的 bus 轮询，EOS/ERROR 能在无 GLib MainLoop 的 CLI 运行中被处理。"""
         if not self._runtime:
             return
         pipeline = self._runtime.get("pipeline")
@@ -226,6 +251,7 @@ class PipelineManager:
         self._bus_thread.start()
 
     def _poll_bus(self, bus, message_types) -> None:
+        """在独立线程消费关键 bus 消息；非实时文件 EOS 会自然结束应用主循环。"""
         while not self._stop_event.is_set():
             message = bus.timed_pop_filtered(200_000_000, message_types)
             if message is None:
@@ -236,6 +262,7 @@ class PipelineManager:
                 return
 
     def _set_pipeline_state_playing(self) -> None:
+        """执行 GStreamer 状态切换，并把同步失败转换为可诊断异常。"""
         if not self._runtime:
             return
         pipeline = self._runtime.get("pipeline")
@@ -249,6 +276,7 @@ class PipelineManager:
             raise RuntimeError(self._last_error)
 
     def _try_rebuild_with_output_fallback(self, exc: RuntimeError) -> bool:
+        """仅在输出硬件路径失败时重建为 fakesink，保留解码、推理与指标链路用于诊断。"""
         if not hasattr(self._builder, "build_runtime_with_fake_output"):
             return False
         settings = getattr(self._builder, "settings", None)
@@ -280,7 +308,7 @@ class PipelineManager:
         return True
 
     def _register_probe_points(self) -> tuple[dict, ...]:
-        """Register probes once, after their registry/parser dependencies exist."""
+        """在 registry/parser/FrameStore 注入后注册一次 probe，避免重复挂载回调。"""
         if self._runtime is None:
             return ()
         if self._runtime.get("probe_points_registered", False):
@@ -293,12 +321,18 @@ class PipelineManager:
         return attachments
 
     def _on_bus_message(self, bus, message) -> None:
+        """将 GStreamer bus 消息归一化为运行状态。
+
+        RTSP 网络类错误和 EOS 只标记 warning，交给 source 的重连能力继续恢复；
+        文件输入的 EOS 则表示全部输入已完成，应结束运行。
+        """
         _ = bus
         message_type = getattr(message, "type", None)
         self._last_message_type = str(message_type) if message_type is not None else None
         message_name = self._message_type_name(message_type)
 
         if message_name == "ERROR":
+            # RTSP 断流类错误可恢复；文件解码/模型等其它错误应让主循环退出。
             error, _debug = message.parse_error()
             if self._is_live_source_recoverable_error(str(error)):
                 self._last_warning = f"recoverable live source error: {error}"
@@ -308,6 +342,7 @@ class PipelineManager:
             return
 
         if message_name == "EOS":
+            # 本地 MP4 的 EOS 是正常结束；live source 的 EOS 则等待 source 重连。
             if self._is_live_source_runtime():
                 self._last_warning = "live source EOS received; keeping pipeline active for reconnect"
                 return

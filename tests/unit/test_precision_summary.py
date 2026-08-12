@@ -32,7 +32,8 @@ class PrecisionSummaryTests(unittest.TestCase):
                 "queues": {
                     "writer": {"dropped": 1, "write_errors": 0},
                     "task_buffer": {"dropped": 2},
-                    "frame_store": {"dropped": 3},
+                    "frame_store": {"dropped": 3, "by_consumer": {"helmet": {"misses": 4}}},
+                    "workers": {"helmet": {"missing_frames": 4}},
                 },
                 "controls": {
                     "fps": {"dropped_frames": 4, "drop_ratio": 0.04},
@@ -50,6 +51,8 @@ class PrecisionSummaryTests(unittest.TestCase):
         self.assertEqual(summary["drop_and_queue_stats"]["writer_dropped"], 1)
         self.assertEqual(summary["drop_and_queue_stats"]["task_buffer_dropped"], 2)
         self.assertEqual(summary["drop_and_queue_stats"]["frame_store_dropped"], 3)
+        self.assertEqual(summary["drop_and_queue_stats"]["frame_store"]["by_consumer"]["helmet"]["misses"], 4)
+        self.assertEqual(summary["drop_and_queue_stats"]["workers"]["helmet"]["missing_frames"], 4)
         self.assertEqual(summary["drop_and_queue_stats"]["fps_controller_dropped"], 4)
 
 

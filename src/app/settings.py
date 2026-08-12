@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""应用配置领域模型与跨配置引用校验。
+
+所有设置对象均为不可变 dataclass：命令行覆盖通过 ``dataclasses.replace`` 创建
+本次运行的快照，避免在长生命周期进程中共享可变配置。
+"""
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -7,6 +13,7 @@ from typing import Literal
 
 @dataclass(frozen=True)
 class WebSettings:
+    # Web 路径只决定 dashboard 聚合输入，不参与 DeepStream 输出 sink。
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8080
@@ -29,6 +36,7 @@ class LoggingSettings:
 
 @dataclass(frozen=True)
 class OutputSettings:
+    # 主帧、异步事件和周期运行指标分别落盘，避免消费者混淆三类记录粒度。
     jsonl_path: Path = Path("outputs/results.jsonl")
     events_jsonl_path: Path = Path("outputs/events.jsonl")
     metrics_jsonl_path: Path | None = None
@@ -42,6 +50,7 @@ class OutputSettings:
 
 @dataclass(frozen=True)
 class OptimizationSettings:
+    """主链路背压与缓存策略；FrameStore 字段用于容量实验和部署调优。"""
     max_queue_size: int = 32
     fps_min: float = 5.0
     fps_max: float = 30.0
@@ -49,6 +58,8 @@ class OptimizationSettings:
     enable_backpressure: bool = True
     enable_drop_old_frames: bool = True
     stale_after_seconds: float = 5.0
+    frame_store_max_size: int | None = None
+    frame_store_per_stream_capacity: int | None = None
 
 
 @dataclass(frozen=True)
@@ -92,8 +103,11 @@ class ModelTaskSettings:
     min_track_frames: int = 1
     cache_frames: int = 0
     frame_trigger: bool = False
+    # 仅 worker 实现并且 engine 支持时才会使用微批；配置字段本身不改变任何 backend。
     micro_batch_size: int = 1
     micro_batch_wait_ms: int = 0
+    queue_size: int | None = None
+    stale_after_ms: int | None = None
     enabled: bool = True
 
 
@@ -108,6 +122,7 @@ class CapabilitySettings:
 
 @dataclass(frozen=True)
 class SourceSettings:
+    """一个输入流及其业务场景、优先级和已启用能力。"""
     name: str
     uri: str
     kind: Literal["rtsp", "file"] = "rtsp"
@@ -120,6 +135,7 @@ class SourceSettings:
 
 @dataclass(frozen=True)
 class DeepStreamSettings:
+    """DeepStream 主 pipeline 的合批、推理、跟踪、渲染和输出参数。"""
     batch_size: int = 6
     batched_push_timeout_us: int = 40000
     inference_width: int = 640
@@ -150,6 +166,7 @@ class DeepStreamSettings:
 
 @dataclass(frozen=True)
 class AppSettings:
+    """运行时配置快照，也是 YAML、路由和基础设施之间的唯一契约。"""
     app_name: str = "deepstream-multistream"
     source_count: int = 6
     sources: tuple[SourceSettings, ...] = ()
@@ -168,13 +185,17 @@ class AppSettings:
     deepstream: DeepStreamSettings = DeepStreamSettings()
 
     def enabled_sources(self) -> tuple[SourceSettings, ...]:
+        """返回实际进入 streammux 的 source，编号和 source_count 校验均以此集合为准。"""
         return tuple(source for source in self.sources if source.enabled)
 
     def effective_source_count(self) -> int:
+        """优先使用启用 source 数；保留 source_count 供没有 sources 的兼容模式。"""
         enabled = self.enabled_sources()
         return len(enabled) if enabled else self.source_count
 
     def validate(self) -> None:
+        """在启动 pipeline 前校验尺寸、枚举值与 source/capability/task/model 引用链。"""
+        # 先校验单字段范围，后续再校验 source -> capability -> task -> model 引用链。
         if self.source_count <= 0:
             raise ValueError("source_count must be greater than zero")
         if self.deepstream.batch_size <= 0:
@@ -200,6 +221,14 @@ class AppSettings:
             raise ValueError("web.log_buffer_size must be greater than zero")
         if self.output.enable_mqtt and not self.output.mqtt_host:
             raise ValueError("mqtt_host must be set when MQTT output is enabled")
+        if self.optimization.frame_store_max_size is not None and self.optimization.frame_store_max_size <= 0:
+            raise ValueError("frame_store_max_size must be greater than zero")
+        if (
+            self.optimization.frame_store_per_stream_capacity is not None
+            and self.optimization.frame_store_per_stream_capacity <= 0
+        ):
+            raise ValueError("frame_store_per_stream_capacity must be greater than zero")
+        # 先验证静态配置，再验证 source -> capability -> task -> model 的业务路由链。
         scene_names = {scene.name for scene in self.scenes if scene.enabled}
         if len(scene_names) != len(tuple(scene.name for scene in self.scenes if scene.enabled)):
             raise ValueError("scene names must be unique")
@@ -241,6 +270,10 @@ class AppSettings:
                 raise ValueError(f"model task `{task.name}` micro_batch_size must be greater than zero")
             if task.micro_batch_wait_ms < 0:
                 raise ValueError(f"model task `{task.name}` micro_batch_wait_ms must not be negative")
+            if task.queue_size is not None and task.queue_size <= 0:
+                raise ValueError(f"model task `{task.name}` queue_size must be greater than zero")
+            if task.stale_after_ms is not None and task.stale_after_ms <= 0:
+                raise ValueError(f"model task `{task.name}` stale_after_ms must be greater than zero")
         for model in self.models:
             if model.input_width <= 0 or model.input_height <= 0:
                 raise ValueError(f"model `{model.name}` input size must be greater than zero")

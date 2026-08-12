@@ -26,6 +26,8 @@ model_tasks:
     trigger_classes: [person]
     interval: 2
     min_track_frames: 3
+    queue_size: 4
+    stale_after_ms: 500
 capabilities:
   helmet_compliance:
     tasks: [helmet]
@@ -39,6 +41,9 @@ sources:
   - name: cam-warehouse
     uri: rtsp://127.0.0.1/warehouse
     scene: warehouse
+optimization:
+  frame_store_max_size: 64
+  frame_store_per_stream_capacity: 8
 """
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "app.yaml"
@@ -52,6 +57,10 @@ sources:
         self.assertEqual(settings.sources[1].scene, "warehouse")
         self.assertEqual(settings.model_tasks[0].model, "helmet")
         self.assertEqual(settings.model_tasks[0].trigger_classes, ("person",))
+        self.assertEqual(settings.model_tasks[0].queue_size, 4)
+        self.assertEqual(settings.model_tasks[0].stale_after_ms, 500)
+        self.assertEqual(settings.optimization.frame_store_max_size, 64)
+        self.assertEqual(settings.optimization.frame_store_per_stream_capacity, 8)
         self.assertEqual(settings.capabilities[0].tasks, ("helmet",))
         self.assertIn("normal", {scene.name for scene in settings.scenes})
         settings.validate()
