@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""基于主模型 track 的轻量场景规则，不额外触发模型推理。"""
+
 from collections import defaultdict
 from threading import Lock
 from typing import Any
@@ -8,7 +10,11 @@ from app.domain.entities import FrameResult, Track
 
 
 class SceneAnalytics:
-    """Config-driven region, line-crossing and person/vehicle analytics."""
+    """按配置产生区域、越线、人车关系和周期统计事件。
+
+    输入是已经过 tracker 的 ``FrameResult``，所以规则以 ``stream_id + track_id``
+    保持跨帧状态。它不改变检测/跟踪结果，也不应被当成行为识别模型。
+    """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self._config = (config or {}).get("streams", {})
@@ -19,6 +25,7 @@ class SceneAnalytics:
         self._last_stats_frame: dict[str, int] = {}
 
     def observe(self, result: FrameResult) -> tuple[dict[str, Any], ...]:
+        """对单帧轨迹执行已配置规则，返回待 EventWriter 持久化的普通字典事件。"""
         stream = str(result.stream_id)
         cfg = self._config.get(stream, {})
         tracks = [track for track in result.tracks if track.track_id >= 0]
@@ -37,6 +44,7 @@ class SceneAnalytics:
                             "track_id": track.track_id,
                             "class_name": track.class_name,
                         })
+            # 记录轨迹中心点在线两侧的符号，符号翻转才视为越线。
             for line in cfg.get("lines", ()):
                 points = line.get("points", ())
                 if len(points) != 2:
@@ -64,6 +72,7 @@ class SceneAnalytics:
 
             people = [track for track in tracks if self._category(track) == "person"]
             vehicles = [track for track in tracks if self._category(track) == "vehicle"]
+            # 这是 bbox 中心落入车辆框的空间关系提示，不代表真实距离或碰撞风险。
             for person in people:
                 for vehicle in vehicles:
                     if self._overlap_or_contained(person, vehicle):
@@ -78,6 +87,7 @@ class SceneAnalytics:
                                 "relation": "near",
                             })
                             self._counted.add(relation_key)
+            # 周期性统计降低事件量；计数依赖 tracker ID，不等同人工去重后的真实人数。
             if result.frame_id - self._last_stats_frame.get(stream, -30) >= 30:
                 self._last_stats_frame[stream] = result.frame_id
                 events.append({
@@ -92,6 +102,7 @@ class SceneAnalytics:
         return tuple(events)
 
     def snapshot(self, stream_id: str) -> dict[str, int]:
+        """返回当前进程内已见轨迹数，供状态接口展示而非持久化事实表。"""
         with self._lock:
             values = self._seen.get(stream_id, {})
             return {key: len(ids) for key, ids in values.items()}
@@ -119,6 +130,7 @@ class SceneAnalytics:
 
     @classmethod
     def _side(cls, track: Track, points: Any) -> int:
+        """以二维叉积判断中心点位于有向线段哪侧；小死区抑制贴线抖动。"""
         (x1, y1), (x2, y2) = points
         x, y = cls._center(track)
         value = (float(x2) - float(x1)) * (y - float(y1)) - (float(y2) - float(y1)) * (x - float(x1))

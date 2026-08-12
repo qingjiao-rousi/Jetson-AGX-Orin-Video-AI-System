@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""主 nvinfer 前的自适应 FPS gate，目标是在过载时优先保持结果新鲜度。"""
+
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -7,12 +9,15 @@ from dataclasses import dataclass, field
 
 @dataclass
 class FpsController:
-    """自适应帧率控制 — 根据 GPU 负载 + 队列深度做丢帧决策。
+    """自适应帧率控制器，根据 GPU 负载和主结果写出背压做丢帧决策。
 
     策略:
       - GPU > 85% 或 queue_depth > 80%  → drop_rate 逐步增加
       - GPU < 60% 且 queue_depth < 40%  → drop_rate 逐步恢复
-      - 每次 observe() 更新滑动窗口统计，不阻塞热路径。
+      - 每次 ``should_drop_frame()`` 位于 probe 热路径，保持为常数级读数和随机决策。
+
+    该控制器的队列信号来自主结果 writer 背压，不覆盖专用 worker/FrameStore 积压；
+    专用任务 freshness 由各自任务队列与 stale deadline 管理。
     """
 
     _settings: object
@@ -34,14 +39,15 @@ class FpsController:
 
     # ──── 热路径：每帧调用 — 必须轻量 ────
     def observe(self, result: object) -> bool:
-        """返回 True 表示建议丢弃当前帧。"""
+        """兼容旧调用点；当前实际 gate 在 nvinfer sink probe 调用 ``should_drop_frame``。"""
         return self.should_drop_frame()
 
     def should_drop_frame(self) -> bool:
-        """Decide before nvinfer whether the current buffer should be dropped."""
+        """在进入主 nvinfer 前决定是否丢弃当前 buffer；True 会由 pad probe 返回 DROP。"""
         if not getattr(self._settings, "enable_fps_control", True):
             self._last_drop_decision = False
             return False
+        # 计数发生在 gate 处，包含最终保留和被 DROP 的 buffer，用于解释控制器自身丢帧率。
         self._total_frames += 1
 
         gpu_pct = self._read_gpu()
@@ -51,6 +57,7 @@ class FpsController:
 
         prev_rate = self._current_drop_rate
 
+        # 高水位快速加大丢帧，低水位缓慢恢复，形成滞后以避免在阈值附近来回抖动。
         if gpu_pct > self._gpu_high or queue_pct > self._queue_high:
             self._current_drop_rate = min(
                 self._max_drop_rate,
@@ -63,7 +70,7 @@ class FpsController:
             )
         # 否则保持当前 drop_rate
 
-        # 概率丢帧（避免固定模式导致抖动）
+        # 概率丢帧避免固定间隔造成周期性抖动；因此单次运行的丢帧序列不可逐帧复现。
         import random
 
         drop = random.random() < self._current_drop_rate
@@ -75,7 +82,7 @@ class FpsController:
 
     # ──── GPU 读取 ────
     def _read_gpu(self) -> float:
-        """从 GPU 监控器读取当前利用率。未接入真机时返回安全默认值。"""
+        """读取最近 GR3D 利用率；离线默认中负载只为避免单测/无硬件环境触发丢帧。"""
         monitor = getattr(self, "_gpu_monitor", None)
         if monitor is not None and hasattr(monitor, "gpu_util"):
             val = monitor.gpu_util()
@@ -86,7 +93,7 @@ class FpsController:
 
     # ──── 队列深度 ────
     def _read_queue_depth(self) -> float:
-        """估算 pipeline 内部队列深度 (0.0 ~ 1.0)。"""
+        """读取主结果背压比例 (0~1)，不是 GStreamer 内部全部 queue 的真实深度。"""
         bp = getattr(self, "_backpressure", None)
         if bp is not None and hasattr(bp, "queue_depth_ratio"):
             return float(bp.queue_depth_ratio())
@@ -94,6 +101,7 @@ class FpsController:
 
     # ──── 绑定外部监控 ────
     def bind_gpu_monitor(self, monitor: object) -> None:
+        """注入可选硬件监控器，保持控制器可在单测中独立创建。"""
         self._gpu_monitor = monitor
 
     def bind_backpressure(self, controller: object) -> None:
@@ -101,6 +109,7 @@ class FpsController:
 
     # ──── 统计 ────
     def stats(self) -> dict[str, object]:
+        """返回最近窗口的决策与输入信号，供 benchmark 解释丢帧。"""
         recent = list(self._window)
         avg_gpu = sum(g for g, _ in recent) / max(len(recent), 1)
         avg_queue = sum(q for _, q in recent) / max(len(recent), 1)

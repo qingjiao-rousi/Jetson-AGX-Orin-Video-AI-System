@@ -1,5 +1,5 @@
-# Task-scheduling experiment: primary INT8, specialists FP16, isolated queues.
-# This is intentionally separate from the published primary-INT8 baseline.
+# 任务调度实验：主检测 INT8，专用模型 FP16，各任务使用独立队列。
+# 它用于比较 freshness 与隔离效果，不应直接当作已发布的整体性能最优基线。
 app:
   app_name: deepstream-yolov8-multifile-8-primary-int8-isolated-tasks
   source_count: 8
@@ -20,7 +20,7 @@ models:
   plate_ocr: {backend: tensorrt, engine: models/plate_ocr_fastalpr-dynamic.engine, config: models/plate_ocr_config.yaml, input_width: 128, input_height: 64}
 
 model_tasks:
-  # Capacities isolate tasks; deadlines reject stale ROI work at worker drain.
+  # 容量隔离不同任务的积压；worker 出队时按 stale_after_ms 拒绝过期 ROI/帧。
   helmet: {model: helmet, trigger_classes: [person], interval: 2, min_track_frames: 3, micro_batch_size: 1, micro_batch_wait_ms: 0, queue_size: 16, stale_after_ms: 750}
   pose: {model: pose, trigger_classes: [person], interval: 10, min_track_frames: 3, queue_size: 8, stale_after_ms: 750}
   fire_smoke: {model: fire_smoke, interval: 10, min_track_frames: 1, frame_trigger: true, queue_size: 8, stale_after_ms: 750}
@@ -56,6 +56,7 @@ analytics:
 logging: {level: INFO, file_path: outputs/primary_int8_isolated_tasks/app.log, console: true}
 output: {jsonl_path: outputs/primary_int8_isolated_tasks/results.jsonl, events_jsonl_path: outputs/primary_int8_isolated_tasks/events.jsonl, enable_jsonl: true, enable_mqtt: false, enable_kafka: false}
 optimization: {max_queue_size: 32, fps_min: 5.0, fps_max: 30.0, enable_fps_control: false, enable_backpressure: true, enable_drop_old_frames: true}
+# 未显式设置 FrameStore 容量时，bootstrap 推导共享容量为 max_queue_size * 4，即 128 帧。
 deepstream:
   batch_size: 8
   batched_push_timeout_us: 40000

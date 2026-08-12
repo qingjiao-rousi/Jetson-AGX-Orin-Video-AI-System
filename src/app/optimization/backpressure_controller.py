@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""以主结果 writer 的生产/消费差估算背压，为 FPS gate 提供轻量反馈。"""
+
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -7,12 +9,15 @@ from dataclasses import dataclass, field
 
 @dataclass
 class BackpressureController:
-    """背压保护 — 监控下游消费速率，防止 pipeline 内部堆积。
+    """主结果写出背压控制器，监控下游 JSONL 消费速率。
 
     策略:
       - 记录每帧的 stream_id/frame_id，跟踪 timestamp 增量
       - 如果 produce 速率远超 consume（窗口内积压超过阈值），触发背压信号
-      - 背压信号供 FpsController 参考，不直接丢帧
+      - 背压信号供 FpsController 参考，本类本身不直接丢帧。
+
+    ``pending_count`` 是最近有界生产/消费窗口的差值，近似 writer 队列压力而不是
+    GStreamer、FrameStore 或全部 worker 队列的总积压。
     """
 
     _settings: object
@@ -30,7 +35,7 @@ class BackpressureController:
 
     # ──── 热路径：每帧调用 ────
     def observe(self, result: object) -> None:
-        """生产者端：每产生一个 FrameResult 调用一次。"""
+        """在编排器收到一个主结果时记录生产；对应消费在 JSONL 成功写入后标记。"""
         if not getattr(self._settings, "enable_backpressure", True):
             self._backpressure_active = False
             return
@@ -38,6 +43,7 @@ class BackpressureController:
         self._last_result = result
 
         now = time.monotonic()
+        # 生产端是 Orchestrator 收到 FrameResult；消费端仅在 JsonWriter flush 成功后推进。
         self._produce_timestamps.append(now)
         self._pending_count = max(0, len(self._produce_timestamps) - len(self._consume_timestamps))
 
@@ -51,9 +57,10 @@ class BackpressureController:
             self._backpressure_active = False
 
     def mark_consumed(self) -> None:
-        """消费者端：每次写出/处理完一条结果调用一次。"""
+        """由 JsonWriter 成功落盘回调调用，减少 writer 侧的估算积压。"""
         if not getattr(self._settings, "enable_backpressure", True):
             return
+        # writer 回调可能滞后于 producer；窗口差仅作为实时控制信号，不是持久队列审计。
         self._consume_timestamps.append(time.monotonic())
         self._pending_count = max(0, len(self._produce_timestamps) - len(self._consume_timestamps))
 
@@ -66,7 +73,7 @@ class BackpressureController:
         return self._backpressure_active
 
     def queue_depth_ratio(self) -> float:
-        """返回当前队列深度比例 (0.0 ~ 1.0)，供 FpsController 参考。"""
+        """返回估算 writer 压力比例 (0~1)，供 FPS gate 参考。"""
         if not getattr(self._settings, "enable_backpressure", True):
             return 0.0
         max_q = max(getattr(self._settings, "max_queue_size", 32), 1)
@@ -74,6 +81,7 @@ class BackpressureController:
 
     # ──── 统计 ────
     def stats(self) -> dict[str, object]:
+        """返回背压状态和最近结果标识，供运行报告定位写出瓶颈。"""
         return {
             "enabled": getattr(self._settings, "enable_backpressure", True),
             "observations": self._observations,

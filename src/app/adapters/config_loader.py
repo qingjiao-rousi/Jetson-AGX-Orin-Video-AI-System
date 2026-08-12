@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""将可读的 YAML 部署配置转换为经过约束的不可变 ``AppSettings``。"""
+
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     yaml = None
 
+# settings 是主链路的稳定配置契约：YAML 的宽松形式在此处一次性归一化。
 from app.settings import (
     AppSettings,
     CapabilitySettings,
@@ -25,6 +28,11 @@ from app.settings import (
 
 
 def load_settings(config_path: Path) -> AppSettings:
+    """加载配置，并保留早期最小化运行方式的默认值。
+
+    配置文件不存在时返回默认设置是历史兼容行为，适合库级调用；生产运行
+    应始终显式传入存在且已审查的 YAML 文件。
+    """
     if yaml is None:
         raise RuntimeError(
             "PyYAML is required to load configuration files. Install with `pip install pyyaml`."
@@ -36,6 +44,7 @@ def load_settings(config_path: Path) -> AppSettings:
     with config_path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
+    # 顶层分段读取，避免下游组件依赖原始 YAML 字典或散落的 get("...")。
     app_cfg = raw.get("app", {})
     logging_cfg = raw.get("logging", {})
     output_cfg = raw.get("output", {})
@@ -49,11 +58,13 @@ def load_settings(config_path: Path) -> AppSettings:
     capabilities_cfg = raw.get("capabilities", {})
     analytics_cfg = raw.get("analytics", {})
 
+    # YAML 允许 mapping 与 list 两种书写形式；统一在边界层归一化，后续模块只面对 dataclass。
     scenes = _parse_scenes(scenes_cfg)
     models = _parse_models(models_cfg)
     model_tasks = _parse_model_tasks(model_tasks_cfg)
     capabilities = _parse_capabilities(capabilities_cfg)
 
+    # SourceSettings 保留场景/能力信息；之后 RoutingPolicy 根据它选择专用任务。
     sources = tuple(
         SourceSettings(
             name=item["name"],
@@ -180,6 +191,7 @@ def _parse_scenes(raw: Any) -> tuple[SceneSettings, ...]:
         return (SceneSettings(name="normal", description="基础检测场景"),)
 
     parsed: list[SceneSettings] = []
+    # mapping 是推荐公开配置格式；list 仍支持历史配置和测试夹具。
     if isinstance(raw, dict):
         items = ((name, value) for name, value in raw.items())
     elif isinstance(raw, list):
@@ -205,8 +217,10 @@ def _parse_scenes(raw: Any) -> tuple[SceneSettings, ...]:
 
 
 def _parse_models(raw: Any) -> tuple[ModelSettings, ...]:
+    """解析可部署引擎；调度频率与触发条件由 ``model_tasks`` 单独定义。"""
     if not raw:
         return ()
+    # engine/path 双键兼容旧配置；内部只保留 engine_path。
     items = raw.items() if isinstance(raw, dict) else (
         (item.get("name"), item) for item in raw if isinstance(item, dict)
     )
@@ -236,6 +250,7 @@ def _parse_models(raw: Any) -> tuple[ModelSettings, ...]:
 
 
 def _parse_model_tasks(raw: Any) -> tuple[ModelTaskSettings, ...]:
+    """解析路由后的异步任务参数，包括独立队列、陈旧任务截止时间和微批上限。"""
     if not raw:
         return ()
     items = raw.items() if isinstance(raw, dict) else (
@@ -246,6 +261,7 @@ def _parse_model_tasks(raw: Any) -> tuple[ModelTaskSettings, ...]:
         if not name:
             raise ValueError("model task name must not be empty")
         options = value if isinstance(value, dict) else {}
+        # 单数 trigger_class 是旧写法，统一为 tuple 后路由层无需再处理类型分支。
         trigger_classes = options.get("trigger_classes", options.get("trigger_class", ()))
         if isinstance(trigger_classes, str):
             trigger_classes = (trigger_classes,)
@@ -273,6 +289,7 @@ def _parse_model_tasks(raw: Any) -> tuple[ModelTaskSettings, ...]:
 
 
 def _parse_capabilities(raw: Any) -> tuple[CapabilitySettings, ...]:
+    """将业务能力映射为任务集合，供 camera source 按场景选择性启用。"""
     if not raw:
         return ()
     items = raw.items() if isinstance(raw, dict) else (

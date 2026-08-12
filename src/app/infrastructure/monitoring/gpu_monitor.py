@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""读取 Jetson ``tegrastats`` 并提供线程安全的最近硬件资源快照。"""
+
 import logging
 import os
 import re
@@ -10,7 +12,13 @@ import time
 
 
 class GpuMonitor:
+    """Jetson 资源监控器。
+
+    它解析 tegrastats 的 GR3D、RAM、EMC、温度和 GPU/SOC rail 功耗字段；缺少工具、
+    权限或硬件时返回 unavailable 快照，不应让主推理流程失败。
+    """
     def __init__(self, *, interval_ms: int | None = None, enabled: bool | None = None) -> None:
+        # 默认启用真机 tegrastats；CI/离线跑测可用环境变量显式关闭而无需改配置。
         env_enabled = os.environ.get("ENABLE_TEGRASTATS", "1") != "0"
         self._enabled = env_enabled if enabled is None else enabled
         self._interval_ms = interval_ms or int(os.environ.get("TEGRASTATS_INTERVAL_MS", "1000"))
@@ -21,6 +29,7 @@ class GpuMonitor:
         self._lock = threading.Lock()
 
     def start(self) -> None:
+        """按配置启动 tegrastats 子进程和读取线程；可通过环境变量显式关闭。"""
         if self._running:
             return
         self._running = True
@@ -42,6 +51,7 @@ class GpuMonitor:
             self._set_unavailable("tegrastats binary not found")
             return
         try:
+            # stdout 由后台线程持续读取，主 pipeline 不等待或解析 tegrastats 文本。
             self._process = subprocess.Popen(
                 [binary, "--interval", str(max(self._interval_ms, 100))],
                 stdout=subprocess.PIPE,
@@ -56,6 +66,7 @@ class GpuMonitor:
         self._thread.start()
 
     def stop(self) -> None:
+        """终止子进程并等待读取线程，保留最终 stopped 状态快照。"""
         self._running = False
         process = self._process
         self._process = None
@@ -84,6 +95,7 @@ class GpuMonitor:
         return self._running
 
     def gpu_util(self) -> float | None:
+        """返回最近 GR3D 利用率，供 FPS 控制器使用；不可用时返回 None。"""
         snapshot = self.snapshot() or {}
         value = snapshot.get("utilization_gpu")
         try:
@@ -92,10 +104,12 @@ class GpuMonitor:
             return None
 
     def snapshot(self) -> dict[str, object] | None:
+        """返回最近一次解析结果的副本，调用方不能修改 monitor 内部状态。"""
         with self._lock:
             return dict(self._last_snapshot) if self._last_snapshot is not None else None
 
     def _read_loop(self) -> None:
+        """逐行消费 tegrastats stdout；解析失败仅忽略该行，避免监控影响业务线程。"""
         process = self._process
         if process is None or process.stdout is None:
             return
@@ -140,6 +154,8 @@ class GpuMonitor:
 
 
 def _parse_tegrastats_line(line: str) -> dict[str, object]:
+    """提取当前 JetPack tegrastats 常见字段；不同版本缺字段时对应值为 None。"""
+    # tegrastats 格式随 JetPack 变化；每个字段独立匹配，缺字段不会丢弃整条快照。
     ram_match = re.search(r"\bRAM\s+(\d+)/(\d+)MB", line)
     swap_match = re.search(r"\bSWAP\s+(\d+)/(\d+)MB", line)
     gr3d_match = re.search(r"\bGR3D_FREQ\s+(\d+)%", line)

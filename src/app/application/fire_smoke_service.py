@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""火焰/烟雾整帧检测的 batch=1 异步 worker 与后处理。"""
+
 from dataclasses import dataclass
 import logging
 from threading import Event, Thread, current_thread
@@ -9,6 +11,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+# 复用通用 TensorRT backend；烟火任务直接处理整帧而不是 person ROI。
 from app.application.helmet_service import TensorRTHelmetBackend, letterbox
 from app.application.routing_policy import TaskRequest
 from app.application.task_metrics import TaskExecutionMetrics
@@ -16,6 +19,7 @@ from app.application.task_metrics import TaskExecutionMetrics
 
 @dataclass(frozen=True)
 class FireSmokeEvent:
+    """整帧 fire/smoke 模型的一条检测事件，bbox 使用源帧坐标。"""
     event_type: str
     stream_id: str
     frame_id: int
@@ -30,6 +34,7 @@ def decode_fire_smoke(
     threshold: float = 0.25,
     iou_threshold: float = 0.45,
 ) -> tuple[tuple[str, float, dict[str, float]], ...]:
+    """解码 YOLO 风格输出并按类别执行 OpenCV NMS，输出仍处于模型输入坐标系。"""
     raw = np.asarray(output)
     if raw.ndim == 3 and raw.shape[1] < raw.shape[2]:
         raw = raw.transpose(0, 2, 1)
@@ -46,6 +51,7 @@ def decode_fire_smoke(
             continue
         candidates.setdefault(class_id, []).append((confidence, {"left": float(row[0]), "top": float(row[1]), "width": float(row[2]), "height": float(row[3])}))
     results = []
+    # 每类各自 NMS，fire 与 smoke 的重叠框不互相抑制。
     for class_id, values in candidates.items():
         boxes = [[box["left"], box["top"], box["width"], box["height"]] for _, box in values]
         scores = [score for score, _ in values]
@@ -57,6 +63,11 @@ def decode_fire_smoke(
 
 
 class FireSmokeTaskWorker:
+    """独立消费 fire_smoke 帧触发任务的 batch=1 worker。
+
+    与 PPE/pose 的目标 ROI 不同，路由层为它提交整帧虚拟 ROI；因此直接使用
+    FrameStore 的整帧 BGR 图像。当前不实施微批，保持配置和 engine 的 batch 契约。
+    """
     def __init__(self, task_buffer: Any, frame_store: Any, model_settings: Any | None) -> None:
         self.task_buffer = task_buffer
         self.frame_store = frame_store
@@ -73,6 +84,7 @@ class FireSmokeTaskWorker:
         self._handler = handler
 
     def start(self) -> None:
+        """启动烟火 worker，真正加载 engine 延迟到首个任务。"""
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
@@ -80,6 +92,7 @@ class FireSmokeTaskWorker:
         self._thread.start()
 
     def stop(self) -> None:
+        """停止轮询并有界等待线程退出。"""
         self._stop_event.set()
         if self._thread is not None and self._thread is not current_thread() and self._thread.is_alive():
             self._thread.join(timeout=2.0)
@@ -94,7 +107,9 @@ class FireSmokeTaskWorker:
         }
 
     def _run(self) -> None:
+        """执行取整帧、letterbox、推理、反变换和逐检测事件回调。"""
         while not self._stop_event.wait(0.02):
+            # 当前模型按单帧执行；独立任务队列仍可隔离它对其它任务的影响。
             requests = self.task_buffer.drain(1, task_name="fire_smoke")
             if not requests:
                 continue
@@ -111,6 +126,7 @@ class FireSmokeTaskWorker:
                     logging.error("fire/smoke worker initialization failed: %s", exc)
                     continue
             for request in requests:
+                # 路由提交的是 frame trigger，因此 FrameStore 中的整帧就是模型输入来源。
                 frame = self.frame_store.get_bgr(request.stream_id, request.frame_id, consumer="fire_smoke")
                 if frame is None:
                     self._metrics.missing_frames += 1
@@ -125,6 +141,7 @@ class FireSmokeTaskWorker:
                     inference_started = time.monotonic()
                     output = self._backend.infer(tensor)
                     self._metrics.record_inference((time.monotonic() - inference_started) * 1000.0)
+                    # decoder 给出模型输入坐标，必须撤销 letterbox 后再写入业务事件。
                     for status, confidence, box in decode_fire_smoke(output, self._labels):
                         box["left"] = max((box["left"] - pad_x) / ratio, 0.0)
                         box["top"] = max((box["top"] - pad_y) / ratio, 0.0)

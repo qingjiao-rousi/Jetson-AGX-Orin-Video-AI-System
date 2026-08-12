@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""车辆 ROI 内的车牌检测与 OCR 串行任务链。"""
+
 from dataclasses import dataclass
 from pathlib import Path
 import logging
@@ -10,6 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+# 复用通用 backend/ROI 工具；crop_person_roi 在这里语义上裁剪车辆框，名称是历史遗留。
 from app.application.helmet_service import TensorRTHelmetBackend, crop_person_roi, letterbox, map_roi_bbox
 from app.application.routing_policy import TaskRequest
 from app.application.task_metrics import TaskExecutionMetrics
@@ -18,12 +21,14 @@ from app.domain.entities import BoundingBox
 
 @dataclass(frozen=True)
 class PlateDetection:
+    """车牌检测器在车辆 ROI 坐标系内的候选框。"""
     confidence: float
     bbox: BoundingBox
 
 
 @dataclass(frozen=True)
 class PlateRecognition:
+    """检测器与 OCR 合成的一次车牌识别结果，尚未经过跨帧稳定化。"""
     stream_id: str
     vehicle_track_id: int
     frame_id: int
@@ -34,6 +39,7 @@ class PlateRecognition:
 
 @dataclass(frozen=True)
 class VehiclePassEvent:
+    """同一车辆多帧 OCR 一致后发出的车辆通行事件。"""
     event_type: str
     stream_id: str
     track_id: int
@@ -44,7 +50,11 @@ class VehiclePassEvent:
 
 
 class PlateTaskWorker:
-    """Consume vehicle plate tasks and run detector→OCR as one task chain."""
+    """消费车辆任务并串行执行 detector -> OCR -> 多帧确认。
+
+    虽然一次可从队列取两个请求，当前代码仍逐条调用 detector/OCR，未实现真正的
+    TensorRT batch。该设计避免车牌数量不定的 OCR 聚合复杂度，但会形成独立瓶颈。
+    """
 
     def __init__(self, task_buffer: Any, frame_store: Any, models: dict[str, Any] | None) -> None:
         self.task_buffer = task_buffer
@@ -62,6 +72,7 @@ class PlateTaskWorker:
         self._handler = handler
 
     def start(self) -> None:
+        """启动车牌 worker；双模型和 OCR 配置在首次有任务时一并校验。"""
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
@@ -69,6 +80,7 @@ class PlateTaskWorker:
         self._thread.start()
 
     def stop(self) -> None:
+        """请求退出并避免 self-join。"""
         self._stop_event.set()
         thread = self._thread
         if thread is not None and thread is not current_thread() and thread.is_alive():
@@ -86,6 +98,7 @@ class PlateTaskWorker:
         }
 
     def _run(self) -> None:
+        """懒加载 detector/OCR 后逐请求处理，并以每车历史抑制 OCR 瞬时误读。"""
         while not self._stop_event.wait(0.02):
             if not self.task_buffer.has_pending("plate_detector"):
                 continue
@@ -101,6 +114,7 @@ class PlateTaskWorker:
                         raise RuntimeError(
                             f"plate OCR config file not found: {ocr.config_path}"
                         )
+                    # 两个 engine 由同一 worker 独占；当前 detector -> OCR 调用链保持串行。
                     self._processor = PlateTaskProcessor(
                         TensorRTHelmetBackend(str(detector.engine_path)),
                         TensorRTHelmetBackend(str(ocr.engine_path)),
@@ -112,6 +126,7 @@ class PlateTaskWorker:
                     logging.error("plate worker initialization failed: %s", exc)
                     self.task_buffer.drain(task_name="plate_detector")
                     return
+            # 这是“每轮最多两条”的消费上限，不是 detector/OCR 的 batch=2 推理。
             for request in self.task_buffer.drain(2, task_name="plate_detector"):
                 frame = self.frame_store.get_bgr(request.stream_id, request.frame_id, consumer="plate_detector")
                 if frame is None:
@@ -133,8 +148,10 @@ class PlateTaskWorker:
                         continue
                     key = (recognition.stream_id, recognition.vehicle_track_id)
                     values = self._history.setdefault(key, [])
+                    # 每车仅保留最近十次 OCR，既做确认也限制长期运行时内存。
                     values.append(recognition)
                     values[:] = values[-10:]
+                    # 至少三次识别且最近五条中同文本出现三次，才认为车牌稳定。
                     if len(values) >= 3:
                         best = max(values, key=lambda item: item.confidence)
                         if sum(item.plate_text == best.plate_text for item in values[-5:]) >= 3:
@@ -163,7 +180,7 @@ def decode_plate_detector_output(
     input_size: int = 384,
     confidence_threshold: float = 0.4,
 ) -> tuple[PlateDetection, ...]:
-    """Decode FastALPR end2end output: [batch_index,x1,y1,x2,y2,class,score]."""
+    """解码 FastALPR 输出 ``[batch_index,x1,y1,x2,y2,class,score]`` 并撤销 letterbox。"""
     raw = np.asarray(output).reshape(-1, 7)
     roi_height, roi_width = roi_shape[:2]
     ratio = min(input_size / roi_width, input_size / roi_height)
@@ -184,6 +201,7 @@ def decode_plate_detector_output(
 
 
 def decode_ocr_output(output: np.ndarray, *, alphabet: str, pad_char: str = "_") -> tuple[str, float]:
+    """以贪心 argmax 解码 OCR 序列；置信度为已输出字符位置最大概率的均值。"""
     raw = np.asarray(output)
     if raw.ndim == 2:
         raw = raw.reshape(1, *raw.shape)
@@ -196,12 +214,15 @@ def decode_ocr_output(output: np.ndarray, *, alphabet: str, pad_char: str = "_")
 
 
 class PlateTaskProcessor:
+    """无状态的 detector -> 最大车牌候选 -> OCR 处理器。"""
     def __init__(self, detector_backend: Any, ocr_backend: Any, *, ocr_config_path: Path) -> None:
         self.detector_backend = detector_backend
         self.ocr_backend = ocr_backend
         self.ocr_config = self._load_ocr_config(ocr_config_path)
 
     def process(self, request: TaskRequest, frame: np.ndarray) -> PlateRecognition | None:
+        """在车辆 ROI 中检测最可信车牌，映射回源帧后裁剪并执行 OCR。"""
+        # 主模型的 car/truck/bus 框定义车辆 ROI；车牌 detector 只在该 ROI 内运行。
         vehicle_roi, vehicle_rect = crop_person_roi(frame, request.bbox, padding_ratio=0.02)
         detector_input, _, _, _ = letterbox(vehicle_roi, 384, 384)
         detector_tensor = np.transpose(
@@ -214,6 +235,7 @@ class PlateTaskProcessor:
         )
         if not plate_detections:
             return None
+        # 当前只 OCR 最可信候选；多车牌/多行文本仍是后续业务扩展边界。
         plate = max(plate_detections, key=lambda item: item.confidence)
         full_plate_bbox = map_roi_bbox(plate.bbox, vehicle_rect)
         crop = frame[
@@ -244,6 +266,7 @@ class PlateTaskProcessor:
 
     @staticmethod
     def _load_ocr_config(path: Path) -> dict[str, Any]:
+        """加载 alphabet、输入尺寸和颜色模式；缺失/错误由 worker 初始化阶段暴露。"""
         import yaml
 
         with path.open("r", encoding="utf-8") as stream:

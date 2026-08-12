@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""应用编排器：把主 pipeline、异步专用任务、指标和结构化输出收敛为一个生命周期。"""
+
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
@@ -7,7 +9,9 @@ from threading import Event
 import time
 from typing import Any
 
+# FrameResult 是主检测/跟踪跨越基础设施后的稳定业务输入。
 from app.domain.entities import FrameResult
+# 路由只生成异步任务请求，实际排队/淘汰由 TaskRequestBuffer 管理。
 from app.application.routing_policy import RoutingPolicy, TaskRequestBuffer
 from app.application.helmet_service import HelmetEvent
 from app.application.plate_service import VehiclePassEvent
@@ -17,6 +21,12 @@ from app.application.fire_smoke_service import FireSmokeEvent
 
 @dataclass
 class Orchestrator:
+    """应用级协调者。
+
+    GStreamer probe 所在的流线程调用 :meth:`on_frame_result`；专用模型 worker
+    在各自线程完成后调用 ``on_*_event``。本类不做模型推理，只负责在两类回调
+    间建立路由、输出、监控和停机边界。
+    """
     settings: object
     pipeline_manager: object
     meta_parser: object
@@ -40,17 +50,22 @@ class Orchestrator:
     _logged_routing_tasks: set[str] = field(default_factory=set, init=False, repr=False)
 
     def start(self) -> None:
+        """按依赖顺序启动监控、主 pipeline 和专用 worker，重复调用无副作用。"""
         if self._started:
             return
+        # 先失败于配置引用/尺寸问题，避免半启动后才暴露模型或流配置错误。
         self.settings.validate()
         self._stop_event.clear()
         self.pipeline_manager.clear_error()
+        # Probe 解析完成后才进入业务编排，避免 GStreamer 层依赖应用服务。
         self.pipeline_manager.probes().register_frame_result_handler(self.on_frame_result)
         if hasattr(self.pipeline_manager, "set_frame_gate") and hasattr(self.fps_controller, "should_drop_frame"):
             self.pipeline_manager.set_frame_gate(self.fps_controller.should_drop_frame)
+        # 监控和 metrics 应早于 pipeline 启动，才能记录首帧和初始化阶段的资源状态。
         self.gpu_monitor.start()
         if hasattr(self.runtime_metrics, "start"):
             self.runtime_metrics.start()
+        # 先启动主 pipeline，再启动 worker；worker 即使提前启动也不会有任务可消费。
         self.pipeline_manager.start()
         if self.helmet_worker is not None and hasattr(self.helmet_worker, "start"):
             self.helmet_worker.start()
@@ -64,9 +79,11 @@ class Orchestrator:
         self._log_pipeline_summary()
 
     def run_forever(self, max_runtime_seconds: float | None = None) -> None:
+        """等待 EOS、外部 stop 或可选超时，不在此线程驱动 GStreamer 数据流。"""
         deadline = None
         if max_runtime_seconds is not None and max_runtime_seconds > 0:
             deadline = time.monotonic() + max_runtime_seconds
+        # 只等待状态变化，不轮询帧；GStreamer 和 worker 都在各自线程持续工作。
         while not self._stop_event.wait(0.2):
             if deadline is not None and time.monotonic() >= deadline:
                 self._stop_event.set()
@@ -77,9 +94,11 @@ class Orchestrator:
                     return
 
     def stop(self) -> None:
+        """停止生产者后回收消费者与输出资源，可安全用于异常清理路径。"""
         if self._stop_event.is_set() and not self._started:
             return
         self._stop_event.set()
+        # 先停止专用 worker，防止 pipeline 释放 FrameStore 后仍有 ROI 任务访问旧帧。
         if self.helmet_worker is not None and hasattr(self.helmet_worker, "stop"):
             self.helmet_worker.stop()
         if self.plate_worker is not None and hasattr(self.plate_worker, "stop"):
@@ -98,9 +117,15 @@ class Orchestrator:
         self._started = False
 
     def on_frame_result(self, result: FrameResult) -> None:
+        """处理一帧主检测结果。
+
+        调用顺序是：主结果观察 -> 场景事件 -> 专用任务路由 -> 运行指标 -> JSONL。
+        该函数处在 probe 回调链上，因此仅提交异步任务，不能在这里做耗时推理。
+        """
         if self._stop_event.is_set():
             return
         try:
+            # 保留最近一帧仅供 dashboard/debug 查看，不能作为跨帧业务缓存。
             self._last_result = result
             self.backpressure_controller.observe(result)
             if self.scene_analytics is not None:
@@ -108,6 +133,7 @@ class Orchestrator:
                     if self.event_writer is not None and hasattr(self.event_writer, "write"):
                         self.event_writer.write(event)
             if self.routing_policy is not None:
+                # 路由只生成请求；每个 worker 的独立队列及其陈旧丢弃规则由 TaskRequestBuffer 执行。
                 requests = self.routing_policy.route(result)
                 if self.task_buffer is not None:
                     self.task_buffer.submit(requests)
@@ -127,6 +153,7 @@ class Orchestrator:
                     result,
                     gpu_snapshot=self.gpu_monitor.snapshot() if hasattr(self.gpu_monitor, "snapshot") else None,
                 )
+            # 主结果最后入队；writer 成功落盘后会回调 metrics 与背压消费端。
             self.json_writer.write(result)
         except Exception as exc:
             message = f"frame result handler failed: {exc}"
@@ -135,12 +162,14 @@ class Orchestrator:
             self._stop_event.set()
 
     def handle_error(self, message: str) -> None:
+        """记录不可恢复错误并同步关闭全部组件，供启动/管理层使用。"""
         self.pipeline_manager.set_error(message)
         logging.error("pipeline error: %s", message)
         self.stop()
         raise RuntimeError(message)
 
     def on_helmet_event(self, event: HelmetEvent) -> None:
+        """接收 PPE worker 的异步领域事件并写入独立事件流。"""
         if self.event_writer is not None and hasattr(self.event_writer, "write"):
             self.event_writer.write(event)
         logging.debug(
@@ -151,6 +180,7 @@ class Orchestrator:
         )
 
     def on_vehicle_event(self, event: VehiclePassEvent) -> None:
+        """写出车辆事件，并把 OCR 结果回填给 pipeline OSD 的共享注释表。"""
         if self.event_writer is not None and hasattr(self.event_writer, "write"):
             self.event_writer.write(event)
         if hasattr(self.pipeline_manager, "register_plate_annotation"):
@@ -176,6 +206,7 @@ class Orchestrator:
         )
 
     def on_pose_event(self, event: PoseEvent) -> None:
+        """接收姿态观测并落盘；当前不在此层推导跌倒、违规等高层行为事件。"""
         if self.event_writer is not None and hasattr(self.event_writer, "write"):
             self.event_writer.write(event)
 
@@ -188,6 +219,7 @@ class Orchestrator:
         )
 
     def pipeline_state(self) -> dict[str, Any]:
+        """组合 pipeline 蓝图与最近结果，供状态接口读取而不暴露运行时对象。"""
         state = self.pipeline_manager.state()
         summary = self.pipeline_manager.describe()
         return {
@@ -220,6 +252,7 @@ class Orchestrator:
         }
 
     def status_snapshot(self) -> dict[str, Any]:
+        """汇总 dashboard/debug API 所需状态；只读取快照，不控制运行组件。"""
         pipeline_state = self.pipeline_state()
         return {
             "app": {

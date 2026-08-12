@@ -1,15 +1,28 @@
 from __future__ import annotations
 
+"""命令行启动入口。
+
+配置文件描述可复现的部署基线；命令行参数只覆盖当前进程的运行行为，
+不会回写 YAML。完整装配顺序为：YAML -> 不可变设置对象 -> 运行时覆盖
+-> composition root -> DeepStream 编排器。
+"""
+
 import argparse
 import logging
 from pathlib import Path
 
+# YAML 先变为不可变配置快照，CLI 参数再只覆盖本次进程。
 from app.adapters.config_loader import load_settings
 from app.adapters.runtime_overrides import apply_runtime_overrides
 from app.bootstrap import create_application
 
 
 def parse_args() -> argparse.Namespace:
+    """解析运行期覆盖项。
+
+    ``--config`` 是可版本化的部署基线；输出、阈值、sink 和运行时目录用于一次性
+    实验，不会修改该基线文件。
+    """
     parser = argparse.ArgumentParser(description="Multi-stream DeepStream application")
     parser.add_argument(
         "--config",
@@ -51,6 +64,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    # 先读取可版本化的基线，再应用本次运行的临时参数，保证实验配置不被污染。
     settings = load_settings(args.config)
     settings = apply_runtime_overrides(
         settings,
@@ -67,6 +82,7 @@ def main() -> int:
         output_sink=args.output_sink,
         output_url=args.output_url,
     )
+    # Bootstrap 只装配组件；真正启动 dashboard、线程和 pipeline 由下方显式控制。
     app = create_application(args.config, settings=settings)
 
     logging.info("application starting")
@@ -83,6 +99,7 @@ def main() -> int:
         logging.exception("application crashed")
         return 1
     finally:
+        # 无论 EOS、超时、Ctrl-C 或初始化后的异常，都要释放 GStreamer 与 worker 资源。
         app.orchestrator.stop()
         if app.dashboard_server is not None:
             app.dashboard_server.stop()

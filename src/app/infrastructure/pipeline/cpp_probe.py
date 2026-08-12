@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+"""通过 ctypes 调用可选 C++ probe parser，并转换到 ``MetaParser`` 既有输入契约。"""
+
+# ctypes 只跨 C ABI 传裸指针/UTF-8 JSON，不把 NvDs/Gst Python 对象长期保存到 native 侧。
 import ctypes
 import json
 import logging
@@ -9,9 +12,15 @@ from typing import Any
 
 
 class CppProbeHandler:
-    """Optional ctypes bridge for the native NvDsBatchMeta parser."""
+    """可选的原生 DeepStream metadata 快路径。
+
+    C++ 库只返回独立分配的 JSON 文本；本类在 ``finally`` 中调用 C ABI 的 free
+    函数，然后将 JSON 归一化为 Python ``MetaParser`` 所接受的 batch payload。
+    缺库、ABI 不匹配或非真实 Gst.Buffer 时由调用方退回 Python 遍历。
+    """
 
     def __init__(self, library_path: Path | None = None) -> None:
+        # 环境变量优先于配置路径，便于在不改 YAML 的情况下验证新编译的 .so。
         self.library_path = library_path or Path("build/probe_handler/libprobe_handler.so")
         self._library: Any | None = None
         self._parse = None
@@ -24,6 +33,7 @@ class CppProbeHandler:
         return self._library is not None and self._parse is not None and self._free is not None
 
     def _load(self) -> None:
+        """按环境变量、配置路径和项目根相对路径查找动态库，不让缺少可选库阻止应用启动。"""
         project_root = Path(__file__).resolve().parents[4]
         candidates: list[Path] = []
         env_path = os.environ.get("CPP_PROBE_HANDLER_PATH")
@@ -42,6 +52,7 @@ class CppProbeHandler:
         )
 
         seen: set[Path] = set()
+        # 同一路径可能来自环境变量和默认值；resolve 后去重，避免重复加载/重复警告。
         for candidate in candidates:
             candidate = candidate.resolve()
             if candidate in seen:
@@ -51,6 +62,7 @@ class CppProbeHandler:
                 continue
             try:
                 library = ctypes.CDLL(str(candidate))
+                # 显式声明 arg/restype，防止 ctypes 默认 int 截断 aarch64 的指针。
                 parse = library.probe_parse_nvds_batch_meta_json
                 free = library.probe_free_json
                 parse.argtypes = [ctypes.c_void_p]
@@ -73,6 +85,7 @@ class CppProbeHandler:
         logging.info("native C++ probe parser unavailable; using Python metadata traversal")
 
     def parse(self, batch_meta: object) -> dict[str, Any]:
+        """直接解析 NvDsBatchMeta 指针；仅用于兼容路径，主 runtime 优先 parse_buffer。"""
         if not self.available:
             raise RuntimeError("native C++ probe parser is unavailable")
 
@@ -83,6 +96,7 @@ class CppProbeHandler:
         if pointer <= 0:
             raise RuntimeError("invalid NvDsBatchMeta pointer")
 
+        # pyds 对象的 hash 是底层地址；这个约定仅在 DeepStream 当前 Python binding 中成立。
         raw_pointer = self._parse(ctypes.c_void_p(pointer))
         if not raw_pointer:
             raise RuntimeError("native C++ probe parser returned a null payload")
@@ -90,6 +104,7 @@ class CppProbeHandler:
         try:
             raw_json = ctypes.string_at(raw_pointer).decode("utf-8")
         finally:
+            # 与 C++ 的 new[] 配对，异常解码时也必须释放。
             self._free(raw_pointer)
 
         try:
@@ -99,6 +114,7 @@ class CppProbeHandler:
         return self.to_batch_payload(frames)
 
     def parse_buffer(self, buffer: object) -> dict[str, Any]:
+        """解析真实 Gst.Buffer，并由原生库在内部取得当前回调的 NvDsBatchMeta。"""
         if not self.available:
             raise RuntimeError("native C++ probe parser is unavailable")
         if not self.is_gst_buffer(buffer):
@@ -117,6 +133,7 @@ class CppProbeHandler:
 
     @staticmethod
     def is_gst_buffer(buffer: object) -> bool:
+        """避免将单测 mock 或普通对象的 hash 误当作 GstBuffer 指针传入 C++。"""
         module = type(buffer).__module__
         class_name = type(buffer).__name__
         if class_name == "Buffer" and "Gst" in module:
@@ -126,6 +143,8 @@ class CppProbeHandler:
         return class_name == "Buffer" and "GstBuffer" in str(gtype_name)
 
     def _parse_pointer(self, parse_function: Any, pointer: int) -> dict[str, Any]:
+        """执行 C ABI 并在文本复制后立即释放 C++ 所有权。"""
+        # C++ 立刻复制 metadata 为 JSON；Python 读取后必须调用匹配的 probe_free_json。
         raw_pointer = parse_function(ctypes.c_void_p(pointer))
         if not raw_pointer:
             raise RuntimeError("native C++ probe parser returned a null payload")
@@ -141,7 +160,11 @@ class CppProbeHandler:
 
     @staticmethod
     def to_batch_payload(frames: object) -> dict[str, Any]:
-        """Normalize the native frame array to the existing MetaParser contract."""
+        """将 C++ 的帧数组归一化为 MetaParser 契约。
+
+        原生输出中的 ``track_id`` 是 tracker 原始 ID；PipelineBuilder 随后会统一
+        生成按流本地连续 ID，保证 C++ 与 Python 回退路径的领域对象语义一致。
+        """
         if not isinstance(frames, list):
             raise RuntimeError("native C++ probe payload must be a JSON array")
 

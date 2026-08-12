@@ -1,22 +1,37 @@
 from __future__ import annotations
 
+"""将 DeepStream/C++/测试 mock 的松散 metadata 归一化为领域 ``FrameResult``。"""
+
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+# 本层输出的 dataclass 是路由、指标和 JSONL 的共同输入，不携带 pyds 对象。
 from app.domain.entities import BoundingBox, Detection, FrameResult, Track, canonical_stream_id
 
 
 class MetaParser:
+    """metadata 适配边界。
+
+    上游可提供原生遍历转换结果、C++ JSON 归一化结果或测试字典；下游只面对
+    UTC 时间戳、``stream-N``、Detection 与 Track。该类不访问 pyds，也不负责
+    track ID 的跨路径重编号。
+    """
+
     def parse(self, raw_meta: object) -> FrameResult:
+        """兼容单帧调用；batch 输入时返回第一帧，批处理主路径应使用 ``parse_many``。"""
         results = self.parse_many(raw_meta)
         return results[0]
 
     def parse_many(self, raw_meta: object) -> list[FrameResult]:
+        """将一个 DeepStream batch 展开为逐帧领域结果，避免把多路帧混成同一业务事件。"""
+        # 先把 dict、native JSON 适配结果和测试 mock 归一化，再识别 batch/单帧结构。
         payload = self._normalize(raw_meta)
         frame_payloads = self._batch_frame_payloads(payload) or [payload]
         return [self._parse_frame(frame_payload, payload) for frame_payload in frame_payloads]
 
     def _parse_frame(self, frame_payload: dict[str, Any], payload: dict[str, Any]) -> FrameResult:
+        """构造不可变业务快照；extra 只继承 batch 级扩展信息。"""
+        # detections 保留所有主模型框；tracks 仅保留 tracker 有效 ID 的对象。
         return FrameResult(
             stream_id=self._parse_stream_id(frame_payload),
             frame_id=self._parse_frame_id(frame_payload),
@@ -36,6 +51,8 @@ class MetaParser:
         return {"raw": raw_meta}
 
     def _parse_frame_timestamp(self, payload: dict[str, Any]) -> datetime:
+        """优先使用真实 wall-clock/NTP；PTS 仅在没有更好时钟时按相对纳秒解释。"""
+        # 时间优先级避免把 PTS 误当墙钟：显式 timestamp > NTP epoch > 相对 PTS > 当前 UTC。
         if "timestamp" in payload and payload.get("timestamp") not in (None, ""):
             return self._parse_timestamp(payload.get("timestamp"), numeric_mode="auto")
         if "ntp_timestamp" in payload and payload.get("ntp_timestamp") not in (None, "", 0):
@@ -86,6 +103,7 @@ class MetaParser:
         return self._datetime_from_epoch_number(numeric)
 
     def _datetime_from_epoch_number(self, value: float) -> datetime:
+        """按量级兼容秒、毫秒、微秒、纳秒 epoch，非法值退化为当前 UTC 时间。"""
         if value >= 1e17:
             seconds = value / 1_000_000_000
         elif value >= 1e14:
@@ -100,6 +118,7 @@ class MetaParser:
             return datetime.now(tz=timezone.utc)
 
     def _parse_stream_id(self, payload: dict[str, Any]) -> str:
+        """统一 source_id、pad_index 与已有 stream-N 字符串，防止下游按名称分裂统计。"""
         if "stream_id" in payload:
             return canonical_stream_id(payload["stream_id"])
         if "source_id" in payload:
@@ -116,8 +135,10 @@ class MetaParser:
         return 0
 
     def _parse_detections(self, payload: dict[str, Any] | object) -> list[Detection]:
+        """从 obj_meta_list/detections 读取所有检测；无 track 的新目标也应保留。"""
         detections: list[Detection] = []
         items = self._resolve_detection_items(payload)
+        # 上游可给 bbox 或 DeepStream rect_params；都在此处统一为 left/top/width/height。
         for item in self._iterate_items(items):
             item_dict = self._item_to_dict(item)
             if item_dict is None:
@@ -139,8 +160,10 @@ class MetaParser:
         return detections
 
     def _parse_tracks(self, payload: dict[str, Any] | object) -> list[Track]:
+        """优先使用上游已生成的 tracks，否则只从具有效 ID 的 object metadata 构建。"""
         tracks: list[Track] = []
         items = self._resolve_track_items(payload)
+        # Track 的 global_track_id 用于溯源，track_id 是 Builder 对本流映射后的业务 ID。
         for item in self._iterate_items(items):
             item_dict = self._item_to_dict(item)
             if item_dict is None:
@@ -171,6 +194,7 @@ class MetaParser:
         return payload
 
     def _resolve_track_items(self, payload: dict[str, Any] | object) -> object:
+        """未跟踪 object_id 为 DeepStream 哨兵值时不能进入 Track，避免伪稳定轨迹。"""
         if isinstance(payload, dict):
             tracks = payload.get("tracks")
             if tracks is not None:
@@ -201,6 +225,7 @@ class MetaParser:
             return None
 
     def _batch_frame_payloads(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """兼容单帧 frame_meta 与 DeepStream GList/JSON batch 的 frame_meta_list。"""
         frame_meta = payload.get("frame_meta")
         if isinstance(frame_meta, dict):
             return [frame_meta]
@@ -211,6 +236,7 @@ class MetaParser:
         return [self._normalize(frame) for frame in self._iterate_items(frame_meta_list)]
 
     def _iterate_items(self, value: object):
+        """统一 Python list、DeepStream GList 和单对象，隔离 pyds 链表细节。"""
         if isinstance(value, list):
             for item in value:
                 yield item

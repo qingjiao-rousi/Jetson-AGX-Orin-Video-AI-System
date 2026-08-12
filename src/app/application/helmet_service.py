@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""PPE 专用模型：CUDA/TensorRT 后端、ROI 后处理、事件稳定化与异步微批 worker。"""
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
@@ -12,12 +14,15 @@ from typing import Any, Protocol
 import cv2
 import numpy as np
 
+# BoundingBox 使用主检测同一坐标语义；TaskRequest 只含 ROI 描述，图像由 worker 从 FrameStore 获取。
 from app.domain.entities import BoundingBox
+# PPE processor 可脱离队列单测；worker 才负责 drain、取帧和线程生命周期。
 from app.application.routing_policy import TaskRequest
 
 
 @dataclass(frozen=True)
 class HelmetDetection:
+    """安全帽模型在人员 ROI 坐标系下的一条检测结果。"""
     class_id: int
     class_name: str
     confidence: float
@@ -26,6 +31,7 @@ class HelmetDetection:
 
 @dataclass(frozen=True)
 class HelmetAssessment:
+    """将 PPE 检测与主模型 person 轨迹关联后的单帧佩戴判断。"""
     stream_id: str
     track_id: int
     frame_id: int
@@ -36,6 +42,7 @@ class HelmetAssessment:
 
 @dataclass(frozen=True)
 class HelmetEvent:
+    """经连续帧确认后的安全帽违规领域事件。"""
     event_type: str
     stream_id: str
     track_id: int
@@ -47,12 +54,17 @@ class HelmetEvent:
 
 
 class HelmetBackend(Protocol):
+    """PPE 处理器依赖的最小推理接口，便于以 mock 后端测试后处理。"""
     def infer(self, image: np.ndarray) -> np.ndarray:
         """Return raw YOLOv8 output shaped like [1, 4 + classes, anchors]."""
 
 
 class _CtypesCudaRuntime:
-    """Minimal libcudart bridge used when cuda-python is not installed."""
+    """cuda-python 缺失时使用的最小 libcudart 适配层。
+
+    只覆盖本项目 TensorRT backend 所需的内存分配、拷贝和 stream 同步 API，不试图
+    替代完整 CUDA Python 包。
+    """
 
     class cudaMemcpyKind:
         cudaMemcpyHostToDevice = 1
@@ -140,7 +152,7 @@ except ImportError:  # pragma: no cover - TensorRT is only available on target
 
 
 class _TensorRTOutputAllocator(_TensorRTOutputAllocatorBase):
-    """CUDA device-buffer allocator for TensorRT dynamic output tensors."""
+    """为动态输出 tensor 提供 CUDA device buffer，并回传 TensorRT 推导后的 shape。"""
 
     def __init__(self, cudart: Any) -> None:
         if hasattr(super(), "__init__"):
@@ -152,6 +164,7 @@ class _TensorRTOutputAllocator(_TensorRTOutputAllocatorBase):
         self.error: str | None = None
 
     def reallocate_output(self, _name: str, _memory: int, size: int, _alignment: int) -> int:
+        """TensorRT 请求更大输出时替换旧 buffer；所有权在本次 infer 的 finally 中回收。"""
         if self.pointer:
             self._cudart.cudaFree(self.pointer)
             self.pointer = 0
@@ -172,9 +185,18 @@ class _TensorRTOutputAllocator(_TensorRTOutputAllocatorBase):
 
 
 class TensorRTHelmetBackend:
-    """TensorRT engine backend using the CUDA Python bindings on Jetson."""
+    """Jetson 上供专用模型复用的 TensorRT v3 执行后端。
+
+    名称源于 PPE 最初实现，但姿态、烟火与车牌也复用它。每次 :meth:`infer` 根据
+    输入 shape 设置 context，完成 H2D -> execute_async_v3 -> 同步 -> D2H；当前
+    实现按调用分配/释放 device buffer，profiling 已将其作为后续可优化点记录。
+    """
 
     def __init__(self, engine_path: str) -> None:
+        """反序列化 engine 并创建独占 execution context/CUDA stream。
+
+        一个 worker 持有一个 backend，避免多个 Python 线程同时驱动同一 context。
+        """
         try:
             import tensorrt as trt
         except ImportError as exc:  # pragma: no cover - target-device dependency
@@ -195,6 +217,7 @@ class TensorRTHelmetBackend:
         if self._engine is None:
             raise RuntimeError(f"failed to deserialize TensorRT engine: {engine_path}")
         self._context = self._engine.create_execution_context()
+        # TensorRT 10 使用按名称绑定；不要假定 input/output 的 binding 索引或名称固定。
         self._input_name = next(
             self._engine.get_tensor_name(index)
             for index in range(self._engine.num_io_tensors)
@@ -210,7 +233,13 @@ class TensorRTHelmetBackend:
         self._stream = stream_handle
 
     def infer(self, image: np.ndarray) -> np.ndarray:
+        """执行一次同步返回的 TensorRT 推理。
+
+        ``execute_async_v3`` 在私有 CUDA stream 排队，但函数在返回前同步，因为后处理
+        需要 host 输出。动态输出由 TensorRT allocator 获取，静态输出由本方法分配。
+        """
         tensor = np.ascontiguousarray(image)
+        # 动态 batch engine 每次必须先设置实际 shape，随后才可推导输出 shape/分配输出。
         self._context.set_input_shape(self._input_name, tensor.shape)
         # Dynamic TensorRT engines can keep output dimensions unresolved until
         # shape inference is explicitly requested after setting the input.
@@ -225,6 +254,7 @@ class TensorRTHelmetBackend:
         static_allocations: dict[str, tuple[int, np.ndarray]] = {}
         dynamic_allocators: dict[str, _TensorRTOutputAllocator] = {}
         try:
+            # 当前实现以调用为边界分配输入/输出 buffer；正确但会带来 profiling 中可见的 alloc 开销。
             error, input_device = self._cudart.cudaMalloc(tensor.nbytes)
             self._check(error, "cudaMalloc(input)")
             allocations.append((input_device, tensor))
@@ -292,6 +322,7 @@ class TensorRTHelmetBackend:
                 raise RuntimeError("TensorRT returned an empty output buffer")
             return outputs[0]
         finally:
+            # 当前调用拥有所有 device allocation，即使执行/拷贝失败也不能泄漏显存。
             for device, _ in allocations:
                 self._cudart.cudaFree(device)
             for allocator in dynamic_allocators.values():
@@ -315,7 +346,7 @@ def crop_person_roi(
     *,
     padding_ratio: float = 0.05,
 ) -> tuple[np.ndarray, tuple[int, int, int, int]]:
-    """Crop a person ROI and return it with its original-frame rectangle."""
+    """按主检测框裁剪人员/车辆 ROI，并返回原图中的 ``left, top, width, height``。"""
     if frame is None or frame.ndim < 2:
         raise ValueError("frame must be a non-empty image")
     height, width = frame.shape[:2]
@@ -331,6 +362,7 @@ def crop_person_roi(
 
 
 def map_roi_bbox(bbox: BoundingBox, roi_rect: tuple[int, int, int, int]) -> BoundingBox:
+    """将 ROI 坐标系中的检测框平移回源帧坐标系。"""
     left, top, _, _ = roi_rect
     return BoundingBox(
         left=bbox.left + left,
@@ -341,6 +373,7 @@ def map_roi_bbox(bbox: BoundingBox, roi_rect: tuple[int, int, int, int]) -> Boun
 
 
 def letterbox(image: np.ndarray, width: int, height: int) -> tuple[np.ndarray, float, float, float]:
+    """等比例缩放并填充到模型输入尺寸，同时返回反变换所需 ratio/padding。"""
     source_height, source_width = image.shape[:2]
     ratio = min(width / source_width, height / source_height)
     resized_width = max(int(round(source_width * ratio)), 1)
@@ -365,7 +398,11 @@ def decode_yolov8_output(
     confidence_threshold: float = 0.25,
     nms_iou_threshold: float = 0.45,
 ) -> tuple[HelmetDetection, ...]:
-    """Decode an Ultralytics YOLOv8 detect head without an NMS plugin."""
+    """解码未内置 NMS 的 YOLOv8 detect head，并将框从 letterbox 输入映射回 ROI。
+
+    支持 ``[1, C, anchors]`` 与 ``[1, anchors, C]`` 两种导出布局；NMS 按类别执行，
+    因为 hardhat/no-hardhat 是互斥但不应彼此抑制的类别。
+    """
     raw = np.asarray(output)
     if raw.ndim == 3:
         raw = raw[0]
@@ -455,6 +492,7 @@ def bbox_iom(inner: BoundingBox, container: BoundingBox) -> float:
 
 
 class HelmetAssociator:
+    """把 PPE 检测与 person 上半身的头部区域关联，过滤无关安全帽。"""
     def __init__(self, *, head_ratio: float = 0.45, min_iom: float = 0.25) -> None:
         self.head_ratio = head_ratio
         self.min_iom = min_iom
@@ -468,6 +506,7 @@ class HelmetAssociator:
         track_id: int,
         frame_id: int,
     ) -> HelmetAssessment:
+        """在 person bbox 上部区域寻找最可信的 helmet/no-helmet 候选并给出单帧结论。"""
         head = BoundingBox(
             person_bbox.left,
             person_bbox.top,
@@ -496,7 +535,10 @@ class HelmetAssociator:
 
 
 class HelmetTaskProcessor:
-    """Run one helmet task after a frame provider supplies the source image."""
+    """执行 PPE ROI 预处理、微批推理、解码和 person 关联。
+
+    worker 负责从 FrameStore 取帧；此类只接受已取得的图像，因此不依赖线程或缓存。
+    """
 
     def __init__(self, backend: HelmetBackend, labels: tuple[str, ...], *, input_size=(640, 640)) -> None:
         self.backend = backend
@@ -510,10 +552,15 @@ class HelmetTaskProcessor:
     def process_batch(
         self, tasks: tuple[tuple[TaskRequest, np.ndarray], ...]
     ) -> tuple[HelmetAssessment, ...]:
-        """Run one TensorRT request for a non-empty batch of person ROIs."""
+        """将非空人员 ROI 集合堆叠为一次 TensorRT 调用，并逐项还原结果。
+
+        所有 ROI 都被 letterbox 到相同输入尺寸，因而可安全 ``np.stack``；engine 输出
+        第一维必须等于输入 batch，否则拒绝把错位结果关联到轨迹。
+        """
         if not tasks:
             return ()
         prepared: list[tuple[TaskRequest, tuple[int, int], tuple[int, int, int, int], np.ndarray]] = []
+        # 每个 ROI 独立 letterbox 后再 stack；保存 roi_rect 用于将 PPE 框映射回源帧。
         for request, frame in tasks:
             roi, roi_rect = crop_person_roi(frame, request.bbox)
             model_image, _, _, _ = letterbox(roi, self.input_width, self.input_height)
@@ -566,7 +613,7 @@ class _HelmetTrackState:
 
 
 class HelmetEventTracker:
-    """Turn frame-level helmet assessments into stable violation events."""
+    """将单帧判断去抖为稳定违规事件，状态以 ``stream_id + track_id`` 隔离。"""
 
     def __init__(self, *, confirm_frames: int = 5, cooldown_frames: int = 30) -> None:
         self.confirm_frames = max(int(confirm_frames), 1)
@@ -574,6 +621,7 @@ class HelmetEventTracker:
         self._states: dict[tuple[str, int], _HelmetTrackState] = {}
 
     def update(self, assessment: HelmetAssessment, person_bbox: BoundingBox) -> HelmetEvent | None:
+        """连续确认 ``not_wearing`` 后只发一次事件；cooldown 防止同一轨迹刷屏。"""
         key = (assessment.stream_id, assessment.track_id)
         state = self._states.setdefault(key, _HelmetTrackState())
         if state.last_frame_id >= 0 and assessment.frame_id <= state.last_frame_id:
@@ -612,7 +660,7 @@ class HelmetEventTracker:
 
 
 class HelmetTaskExecutor:
-    """Consume routed helmet tasks without blocking the DeepStream probe."""
+    """消费已取帧的 PPE 微批，记录 worker 时延并把稳定判断转为事件。"""
 
     def __init__(self, processor: HelmetTaskProcessor, event_tracker: HelmetEventTracker) -> None:
         self.processor = processor
@@ -628,6 +676,7 @@ class HelmetTaskExecutor:
     def process_requests(
         self, requests: tuple[TaskRequest, ...], frame_store: Any
     ) -> tuple[HelmetEvent, ...]:
+        """从 FrameStore 取帧后执行一个微批；缺帧只计数，不阻塞其它请求。"""
         events: list[HelmetEvent] = []
         tasks: list[tuple[TaskRequest, np.ndarray]] = []
         for request in requests:
@@ -638,6 +687,7 @@ class HelmetTaskExecutor:
             tasks.append((request, frame))
         if not tasks:
             return ()
+        # queue wait 从路由提交时刻算起，包含等待凑批的时间。
         inference_started = time.monotonic()
         self.queue_wait_ms.extend(
             max((inference_started - request.submitted_at_monotonic) * 1000.0, 0.0)
@@ -656,6 +706,7 @@ class HelmetTaskExecutor:
             max((now - request.submitted_at_monotonic) * 1000.0, 0.0)
             for request, _ in tasks
         )
+        # 事件 tracker 才决定是否发违规；单帧 not_wearing 不会直接写业务事件。
         for (request, _), assessment in zip(tasks, assessments):
             self.processed += 1
             event = self.event_tracker.update(assessment, request.bbox)
@@ -677,7 +728,12 @@ class HelmetTaskExecutor:
 
 
 class HelmetTaskWorker:
-    """Lazy, dedicated worker for the configured PPE TensorRT engine."""
+    """PPE 专用异步 worker。
+
+    它独占一个线程和 TensorRT context，通过 ``TaskRequestBuffer`` 只消费 helmet
+    队列。按需初始化避免未启用 PPE 的运行提前加载 engine；初始化失败时清空本任务
+    队列并禁用自身，防止每 20ms 重复报错。
+    """
 
     def __init__(
         self, task_buffer: Any, frame_store: Any, model_settings: Any | None, task_settings: Any | None = None
@@ -698,6 +754,7 @@ class HelmetTaskWorker:
         self._event_handler = handler
 
     def start(self) -> None:
+        """启动 daemon worker；生命周期由 Orchestrator 统一管理。"""
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
@@ -705,6 +762,7 @@ class HelmetTaskWorker:
         self._thread.start()
 
     def stop(self) -> None:
+        """请求退出并有界等待，避免从 worker 自己的线程 join 自己。"""
         self._stop_event.set()
         thread = self._thread
         if thread is not None and thread is not current_thread() and thread.is_alive():
@@ -725,6 +783,7 @@ class HelmetTaskWorker:
         }
 
     def _run(self) -> None:
+        """轮询本任务队列、延迟初始化后端、执行微批并回调领域事件。"""
         while not self._stop_event.wait(0.02):
             if self.model_settings is None:
                 continue
@@ -754,6 +813,7 @@ class HelmetTaskWorker:
                     self.task_buffer.drain(task_name="helmet")
                     self._disabled = True
                     return
+            # collect 只从 helmet 队列拿请求；其它 worker 的积压不会拖慢 PPE 消费。
             requests = self._collect_requests()
             events = self._executor.process_requests(requests, self.frame_store)
             if self._executor.processed > 0 and not self._logged_processing:
@@ -770,6 +830,11 @@ class HelmetTaskWorker:
         return max(int(getattr(self.task_settings, "micro_batch_wait_ms", 0)), 0)
 
     def _collect_requests(self) -> tuple[TaskRequest, ...]:
+        """最多收集配置 batch 大小的最新 PPE 请求。
+
+        ``micro_batch_wait_ms=0`` 时立即执行，优先 freshness；非零等待用于实验吞吐与
+        时延权衡。队列 drain 内部仍会先丢弃超过 stale deadline 的请求。
+        """
         maximum = self._micro_batch_size()
         requests = list(self.task_buffer.drain(maximum, task_name="helmet"))
         if len(requests) >= maximum:
